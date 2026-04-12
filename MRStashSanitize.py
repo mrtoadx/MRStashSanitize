@@ -59,23 +59,18 @@ def get_all_tags(url, apikey):
 
 def ensure_tag_exists(url, apikey, tag_name):
     """
-    Look up a tag by name. If it doesn't exist, create it.
+    Look up a tag by name and create it if missing.
+    Uses allTags (version-stable, no filter syntax issues).
     Returns {"id": ..., "name": ...}.
     """
-    res = graphql_query(url, apikey, """
-    query FindTagsByName($name: String) {
-      findTags(tag_filter: { name: { value: $name, modifier: EQUALS } }) {
-        tags { id name }
-      }
-    }
-    """, {"name": tag_name})
-    tags = res.get("data", {}).get("findTags", {}).get("tags", [])
-    if tags:
-        t = tags[0]
-        log.info("Tag '%s' already exists (id=%s)", tag_name, t["id"])
-        return {"id": t["id"], "name": t["name"]}
+    res = graphql_query(url, apikey, "query { allTags { id name } }")
+    all_tags = res.get("data", {}).get("allTags", [])
+    for t in all_tags:
+        if t["name"].lower() == tag_name.lower():
+            log.info("Tag '%s' already exists (id=%s)", tag_name, t["id"])
+            return {"id": t["id"], "name": t["name"]}
 
-    log.info("Creating tag '%s'…", tag_name)
+    log.info("Creating tag '%s'...", tag_name)
     create_res = graphql_query(url, apikey, """
     mutation TagCreate($input: TagCreateInput!) {
       tagCreate(input: $input) { id name }
@@ -321,25 +316,28 @@ def task_scan(url, apikey):
     Writes results to assets/sanitize_report.json.
     """
     os.makedirs(ASSETS_DIR, exist_ok=True)
-    _write_status({"status": "running", "message": "Loading config…", "progress": 0})
+    _write_status({"status": "running", "message": "Loading config...", "progress": 0})
 
-    # ── Ensure MissingStudio tag exists ───────────────────────────────────────
-    _write_status({"status": "running", "message": "Ensuring system tags exist…", "progress": 1})
-    missing_studio_tag = ensure_tag_exists(url, apikey, MISSING_STUDIO_TAG_NAME)
-    missing_studio_tag_id = missing_studio_tag["id"]
-    log.info("MissingStudio tag id=%s", missing_studio_tag_id)
-
-    # ── Config ────────────────────────────────────────────────────────────────
+    # Config
     config_res = graphql_query(url, apikey, "query { configuration { plugins } }")
     plugins_cfg = config_res.get("data", {}).get("configuration", {}).get("plugins", {})
     my_cfg = plugins_cfg.get("MRStashSanitize", {})
     strip_unmatched = str(my_cfg.get("strip_unmatched_sigils", "true")).lower() not in ("false", "0", "no", "off")
     print(f"strip_unmatched_sigils={strip_unmatched}", flush=True)
 
-    # ── Tags ──────────────────────────────────────────────────────────────────
-    print("Loading all tags…", flush=True)
+    # Load all tags once; reused for token matching and MissingStudio check
+    _write_status({"status": "running", "message": "Loading tags...", "progress": 2})
+    print("Loading all tags...", flush=True)
     tag_lookup = get_all_tags(url, apikey)
     print(f"Loaded {len(tag_lookup)} tags/aliases", flush=True)
+
+    # Ensure MissingStudio tag exists (uses already-loaded tag_lookup, only
+    # hits the network if the tag needs to be created)
+    _write_status({"status": "running", "message": "Ensuring system tags exist...", "progress": 4})
+    missing_studio_tag = ensure_tag_exists(url, apikey, MISSING_STUDIO_TAG_NAME)
+    missing_studio_tag_id = missing_studio_tag["id"]
+    tag_lookup[MISSING_STUDIO_TAG_NAME.lower()] = missing_studio_tag
+    log.info("MissingStudio tag id=%s", missing_studio_tag_id)
 
     _write_status({"status": "running", "message": "Scanning scenes…", "progress": 5})
 
