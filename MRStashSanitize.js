@@ -98,6 +98,25 @@
   const IconTag     = () => ce("svg",{xmlns:"http://www.w3.org/2000/svg",viewBox:"0 0 24 24",width:12,height:12,fill:"none",stroke:"currentColor",strokeWidth:2,strokeLinecap:"round",strokeLinejoin:"round"},ce("path",{d:"M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"}),ce("line",{x1:7,y1:7,x2:"7.01",y2:7}));
   const IconArrow   = () => ce("svg",{xmlns:"http://www.w3.org/2000/svg",viewBox:"0 0 24 24",width:14,height:14,fill:"none",stroke:"currentColor",strokeWidth:2,strokeLinecap:"round",strokeLinejoin:"round"},ce("line",{x1:5,y1:12,x2:19,y2:12}),ce("polyline",{points:"12 5 19 12 12 19"}));
 
+  // ── Junk chip (unmatched sigil token) ────────────────────────────────────────
+
+  function JunkChip({ raw }) {
+    return ce("span", {
+      className: "ss-tag-chip ss-tag-junk",
+      title: "Sigil token with no matching tag — will be stripped from filename",
+    },
+      ce("svg", { xmlns: "http://www.w3.org/2000/svg", viewBox: "0 0 24 24", width: 11, height: 11,
+        fill: "none", stroke: "currentColor", strokeWidth: 2.5,
+        strokeLinecap: "round", strokeLinejoin: "round" },
+        ce("polyline", { points: "3 6 5 6 21 6" }),
+        ce("path", { d: "M19 6l-1 14H6L5 6" }),
+        ce("path", { d: "M10 11v6M14 11v6" }),
+        ce("path", { d: "M9 6V4h6v2" })
+      ),
+      " ", raw
+    );
+  }
+
   // ── Tag chip ──────────────────────────────────────────────────────────────────
 
   function TagChip({ name, isNew }) {
@@ -133,6 +152,8 @@
   function SceneRow({ item, selected, onToggle }) {
     const newTags      = item.tags_to_add || [];
     const existingTags = item.tags_already_on_scene || [];
+    const junkTokens   = item.unmatched_tokens || [];
+    const strippedJunk = item.stripped_unmatched;
 
     return ce("div", { className: `ss-row ${selected ? "ss-row-selected" : ""}` },
       // Checkbox
@@ -151,10 +172,11 @@
         item.filename_changes
           ? ce(FilenameChange, { item })
           : ce("div", { className: "ss-no-rename" }, "Filename unchanged — tags only"),
-        // Tags
-        (newTags.length > 0 || existingTags.length > 0) && ce("div", { className: "ss-tags-row" },
+        // Tags + junk chips
+        (newTags.length > 0 || existingTags.length > 0 || junkTokens.length > 0) && ce("div", { className: "ss-tags-row" },
           newTags.map(t      => ce(TagChip, { key: t.tag_id, name: t.tag_name, isNew: true })),
-          existingTags.map(t => ce(TagChip, { key: t.tag_id, name: t.tag_name, isNew: false }))
+          existingTags.map(t => ce(TagChip, { key: t.tag_id, name: t.tag_name, isNew: false })),
+          strippedJunk && junkTokens.map(t => ce(JunkChip, { key: t.raw, raw: t.raw }))
         )
       ),
       // Accept / Reject quick buttons

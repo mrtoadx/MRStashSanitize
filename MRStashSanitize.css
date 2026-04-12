@@ -400,6 +400,14 @@
   color: #666;
 }
 
+/* Junk / unmatched sigil token — will be stripped, no tag created */
+.ss-tag-junk {
+  background: rgba(255, 152, 0, 0.08);
+  border: 1px solid rgba(255, 152, 0, 0.22);
+  color: #888;
+  font-style: italic;
+}
+
 /* Action bar */
 .ss-action-bar {
   display: flex;

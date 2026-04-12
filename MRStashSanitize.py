@@ -84,61 +84,102 @@ def move_file(url, apikey, file_id, new_path):
 
 # ── Token extraction ───────────────────────────────────────────────────────────
 
-# Matches tokens like: _BigAss  _Big_Ass  _big_ass  #BlowJob  #blow_job
-# Also catches leading/trailing standalone underscore-chains.
-TOKEN_RE = re.compile(
-    r'(?<![A-Za-z0-9])'      # not preceded by alphanumeric
-    r'[_#]+'                  # one or more _ or #
-    r'([A-Za-z][A-Za-z0-9]*(?:[_][A-Za-z0-9]+)*)'  # word or underscore-joined words
-    r'(?![A-Za-z0-9])'       # not followed by alphanumeric
+# Sigil token patterns — a "sigil" is a leading _ or # that marks injected metadata.
+#
+# SIGIL_JOINED_RE: _Big_Ass or #Blow_Job  (Title_Case chain after sigil)
+#   Matched first so _Big_Ass isn't split into _Big + _Ass by the word pass.
+SIGIL_JOINED_RE = re.compile(
+    r'(?<![A-Za-z0-9])'
+    r'[_#]+'
+    r'([A-Z][a-z]+(?:_[A-Z][a-z]+)+)'
+    r'(?![A-Za-z0-9])'
 )
+# SIGIL_WORD_RE: _BigAss  #BlowJob  _HD  (single word, CamelCase allowed internally)
+SIGIL_WORD_RE = re.compile(
+    r'(?<![A-Za-z0-9])'
+    r'[_#]+'
+    r'([A-Za-z][A-Za-z0-9]*)'
+    r'(?![A-Za-z0-9])'
+)
+# SIGIL_NUM_RE: _4K  #720p  _1080p  _60fps  (digit-starting shorthands)
+#   Lookahead boundary used instead of lookbehind so "Word_4K_Next" is caught
+#   even though the _ is also the separator after the preceding word.
+SIGIL_NUM_RE = re.compile(r'[_#]+(\d+[A-Za-z]*)(?=[_\s#]|$)')
 
 
 def token_to_phrase(raw_token):
-    """'_Big_Ass' → 'big ass',  '#BlowJob' → 'blow job' (camel split)."""
-    # strip leading _ and #
+    """Convert a raw token to a normalised phrase for tag lookup.
+
+    '_Big_Ass'  → 'big ass'
+    '#BlowJob'  → 'blow job'
+    '_4K'       → '4k'        (digit tokens lowercased as-is)
+    """
     s = re.sub(r'^[_#]+', '', raw_token)
-    # split on underscores
+    # Digit-starting shorthands: return lowercased directly
+    if s and s[0].isdigit():
+        return s.lower()
     parts = s.split('_')
     words = []
     for part in parts:
-        # camel-case split: 'BlowJob' → ['Blow', 'Job']
         words.extend(re.findall(r'[A-Z]?[a-z]+|[A-Z]+(?=[A-Z]|$)', part) or [part])
     return ' '.join(w.lower() for w in words if w)
 
 
 def extract_candidate_tokens(filename_no_ext):
+    """Return (sigil_tokens, other_tokens).
+
+    sigil_tokens — every _/# prefixed token (joined, word, numeric).
+                   Caller partitions into tag-matched vs unmatched junk.
+    other_tokens — bare CamelCase / Title_Case tokens with no sigil.
+                   Only used as tag candidates, never treated as junk.
+
+    Both are lists of {"raw": str, "phrase": str}.
     """
-    Return list of (raw_match, phrase) for every tag-candidate token in the filename.
-    Also handle filenames where words are joined by underscores (no leading _/#):
-    e.g. 'BigAss_BlowJob_Scene' — we try each CamelCase word too.
-    """
-    candidates = []
+    sigil_tokens = []
+    other_tokens = []
+    seen_raw     = set()
     seen_phrases = set()
 
-    # Pass 1: explicit _Word or #Word patterns
-    for m in TOKEN_RE.finditer(filename_no_ext):
-        raw = m.group(0)
+    def _add_sigil(raw):
+        if raw in seen_raw:
+            return
+        seen_raw.add(raw)
         phrase = token_to_phrase(raw)
-        if phrase and phrase not in seen_phrases:
+        if phrase:
             seen_phrases.add(phrase)
-            candidates.append({"raw": raw, "phrase": phrase, "span": m.span()})
+        sigil_tokens.append({"raw": raw, "phrase": phrase})
 
-    # Pass 2: CamelCase words anywhere in the name that weren't caught above
+    # Pass 1A: Title_Case chains  (_Big_Ass, #Blow_Job …) — must run before 1B
+    for m in SIGIL_JOINED_RE.finditer(filename_no_ext):
+        _add_sigil(m.group(0))
+
+    # Pass 1B: single CamelCase / simple words  (_BigAss, #HD …)
+    for m in SIGIL_WORD_RE.finditer(filename_no_ext):
+        _add_sigil(m.group(0))
+
+    # Pass 1C: digit shorthands  (_4K, #720p, _60fps …)
+    for m in SIGIL_NUM_RE.finditer(filename_no_ext):
+        _add_sigil(m.group(0))
+
+    # Pass 2: bare CamelCase words not already captured  (BlowJob, BigAss …)
     for m in re.finditer(r'[A-Z][a-z]+(?:[A-Z][a-z]+)+', filename_no_ext):
-        phrase = ' '.join(re.findall(r'[A-Z][a-z]+', m.group(0))).lower()
-        if phrase and phrase not in seen_phrases:
+        raw = m.group(0)
+        phrase = ' '.join(re.findall(r'[A-Z][a-z]+', raw)).lower()
+        if phrase and raw not in seen_raw and phrase not in seen_phrases:
+            seen_raw.add(raw)
             seen_phrases.add(phrase)
-            candidates.append({"raw": m.group(0), "phrase": phrase, "span": m.span()})
+            other_tokens.append({"raw": raw, "phrase": phrase})
 
     # Pass 3: underscore-joined Title_Case words without a leading sigil
     for m in re.finditer(r'(?<![_#])\b([A-Z][a-z]+(?:_[A-Z][a-z]+)+)\b', filename_no_ext):
-        phrase = m.group(1).replace('_', ' ').lower()
-        if phrase and phrase not in seen_phrases:
+        raw = m.group(1)
+        phrase = raw.replace('_', ' ').lower()
+        if phrase and raw not in seen_raw and phrase not in seen_phrases:
+            seen_raw.add(raw)
             seen_phrases.add(phrase)
-            candidates.append({"raw": m.group(1), "phrase": phrase, "span": m.span()})
+            other_tokens.append({"raw": raw, "phrase": phrase})
 
-    return candidates
+    return sigil_tokens, other_tokens
 
 
 def build_new_filename(original_stem, tokens_to_remove):
@@ -150,7 +191,6 @@ def build_new_filename(original_stem, tokens_to_remove):
     # Sort longest-first so overlapping removals don't leave fragments
     sorted_tokens = sorted(tokens_to_remove, key=lambda t: len(t["raw"]), reverse=True)
     for tok in sorted_tokens:
-        # remove the raw token
         result = result.replace(tok["raw"], '')
 
     # Clean up: collapse multiple underscores, trim leading/trailing punctuation
@@ -168,7 +208,14 @@ def task_scan(url, apikey):
     Write results to assets/sanitize_report.json.
     """
     os.makedirs(ASSETS_DIR, exist_ok=True)
-    _write_status({"status": "running", "message": "Loading tags…", "progress": 0})
+    _write_status({"status": "running", "message": "Loading config…", "progress": 0})
+
+    # Read plugin settings
+    config_res = graphql_query(url, apikey, "query { configuration { plugins } }")
+    plugins_cfg = config_res.get("data", {}).get("configuration", {}).get("plugins", {})
+    my_cfg = plugins_cfg.get("MRStashSanitize", {})
+    strip_unmatched = str(my_cfg.get("strip_unmatched_sigils", "true")).lower() not in ("false", "0", "no", "off")
+    print(f"strip_unmatched_sigils={strip_unmatched}", flush=True)
 
     print("Loading all tags…", flush=True)
     tag_lookup = get_all_tags(url, apikey)
@@ -207,16 +254,20 @@ def task_scan(url, apikey):
             continue
 
         dirname = os.path.dirname(path)
-        basename = os.path.basename(path)
-        stem, ext = os.path.splitext(basename)
+        basename_orig = os.path.basename(path)
+        stem, ext = os.path.splitext(basename_orig)
 
-        candidates = extract_candidate_tokens(stem)
-        if not candidates:
+        sigil_tokens, other_tokens = extract_candidate_tokens(stem)
+        all_candidates = sigil_tokens + other_tokens
+
+        if not all_candidates:
             continue
 
-        # Filter to only candidates that match a known tag
-        matched = []
-        for c in candidates:
+        # Partition candidates into tag-matched vs unmatched sigil junk
+        matched = []           # has a Stash tag
+        unmatched_sigil = []   # sigil-bearing but no tag match → strip if setting on
+
+        for c in sigil_tokens:
             phrase = c["phrase"]
             if phrase in tag_lookup:
                 matched.append({
@@ -225,17 +276,33 @@ def task_scan(url, apikey):
                     "tag_id": tag_lookup[phrase]["id"],
                     "tag_name": tag_lookup[phrase]["name"],
                 })
+            else:
+                unmatched_sigil.append({"raw": c["raw"], "phrase": phrase})
 
-        if not matched:
+        for c in other_tokens:
+            phrase = c["phrase"]
+            if phrase in tag_lookup:
+                matched.append({
+                    "raw": c["raw"],
+                    "phrase": phrase,
+                    "tag_id": tag_lookup[phrase]["id"],
+                    "tag_name": tag_lookup[phrase]["name"],
+                })
+            # non-sigil tokens that don't match a tag are left alone — they're
+            # likely real words in the title, not injected metadata
+
+        # Decide what to strip from the filename
+        tokens_to_strip = list(matched)
+        if strip_unmatched:
+            tokens_to_strip.extend(unmatched_sigil)
+
+        # Skip scene if nothing would change
+        if not tokens_to_strip and not matched:
             continue
 
-        new_stem = build_new_filename(stem, matched)
+        new_stem = build_new_filename(stem, tokens_to_strip)
         new_basename = new_stem + ext
         new_path = os.path.join(dirname, new_basename)
-
-        # Don't emit a row if the filename wouldn't change
-        if new_basename == basename and not matched:
-            continue
 
         existing_tag_ids = {t["id"] for t in scene.get("tags", [])}
         tags_to_add = [m for m in matched if m["tag_id"] not in existing_tag_ids]
@@ -244,19 +311,27 @@ def task_scan(url, apikey):
         # All tag IDs the scene should end up with
         all_tag_ids = list(existing_tag_ids | {m["tag_id"] for m in matched})
 
+        # Only include scenes where something actually changes
+        has_tag_changes    = len(tags_to_add) > 0
+        has_file_changes   = new_basename != basename_orig
+        if not has_tag_changes and not has_file_changes:
+            continue
+
         pending.append({
             "scene_id": scene["id"],
-            "scene_title": scene.get("title") or basename,
+            "scene_title": scene.get("title") or basename_orig,
             "file_id": file["id"],
             "original_path": path,
             "new_path": new_path,
             "original_stem": stem,
             "new_stem": new_stem,
             "matched_tokens": matched,
+            "unmatched_tokens": unmatched_sigil,   # junk tokens with no tag
+            "stripped_unmatched": strip_unmatched,  # record what setting was active
             "tags_to_add": tags_to_add,
             "tags_already_on_scene": tags_already,
             "all_tag_ids": all_tag_ids,
-            "filename_changes": new_basename != basename,
+            "filename_changes": has_file_changes,
         })
 
     report = {
@@ -314,11 +389,13 @@ def task_apply(url, apikey, args):
                 if not ok:
                     print(f"  WARNING: moveFiles returned false for scene {sid}", flush=True)
 
-            # 2. Update scene title (strip the same tokens from title if they appear)
+            # 2. Update scene title (strip matched tokens AND unmatched junk from title)
             original_title = item.get("scene_title", "")
             new_title = original_title
-            for tok in item.get("matched_tokens", []):
-                # Remove tag-like token from title too (case-insensitive)
+            all_tokens_to_strip_from_title = list(item.get("matched_tokens", []))
+            if item.get("stripped_unmatched"):
+                all_tokens_to_strip_from_title.extend(item.get("unmatched_tokens", []))
+            for tok in all_tokens_to_strip_from_title:
                 new_title = re.sub(re.escape(tok["raw"]), '', new_title, flags=re.IGNORECASE)
             new_title = re.sub(r'\s+', ' ', new_title).strip()
             if not new_title:
