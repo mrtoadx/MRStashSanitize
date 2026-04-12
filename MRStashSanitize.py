@@ -102,12 +102,15 @@ def studio_to_folder_name(studio_name):
 # ── Token extraction ───────────────────────────────────────────────────────────
 
 # Sigil token patterns — a "sigil" is a leading _ or # that marks injected metadata.
+#
+# SIGIL_JOINED_RE: _Big_Ass or #Blow_Job  (Title_Case chain after sigil)
 SIGIL_JOINED_RE = re.compile(
     r'(?<![A-Za-z0-9])'
     r'[_#]+'
     r'([A-Z][a-z]+(?:_[A-Z][a-z]+)+)'
     r'(?![A-Za-z0-9])'
 )
+# SIGIL_WORD_RE: _BigAss  #BlowJob  _HD
 SIGIL_WORD_RE = re.compile(
     r'(?<![A-Za-z0-9])'
     r'[_#]+'
@@ -115,6 +118,11 @@ SIGIL_WORD_RE = re.compile(
     r'(?![A-Za-z0-9])'
 )
 SIGIL_NUM_RE = re.compile(r'[_#]+(\d+[A-Za-z]*)(?=[_\s#]|$)')
+
+# SIGIL_CHAIN_RE: matches any run of 2+ consecutive sigil-word tokens.
+# e.g. "#All#Together#Like#This" or "_Foo#Bar#Baz"
+# We split these in a pre-pass so each word is looked up individually.
+SIGIL_CHAIN_RE = re.compile(r'((?:[_#][A-Za-z][A-Za-z0-9]*){2,})')
 
 
 def token_to_phrase(raw_token):
@@ -129,8 +137,22 @@ def token_to_phrase(raw_token):
     return ' '.join(w.lower() for w in words if w)
 
 
+def _split_sigil_chain(chain):
+    """Split a consecutive sigil run into individual #Word / _Word tokens.
+
+    "#All#Together#Like#This" -> ["#All", "#Together", "#Like", "#This"]
+    """
+    return re.findall(r'[_#][A-Za-z][A-Za-z0-9]*', chain)
+
+
 def extract_candidate_tokens(filename_no_ext):
-    """Return (sigil_tokens, other_tokens)."""
+    """Return (sigil_tokens, other_tokens).
+
+    Pre-pass: SIGIL_CHAIN_RE finds runs of consecutive sigil-words like
+    #All#Together#Like#This and splits them into individual tokens before
+    the main passes run. seen_raw dedup ensures the main passes don't
+    double-count anything already captured here.
+    """
     sigil_tokens = []
     other_tokens = []
     seen_raw     = set()
@@ -145,6 +167,12 @@ def extract_candidate_tokens(filename_no_ext):
             seen_phrases.add(phrase)
         sigil_tokens.append({"raw": raw, "phrase": phrase})
 
+    # Pre-pass: split chained runs like #All#Together#Like#This
+    for m in SIGIL_CHAIN_RE.finditer(filename_no_ext):
+        for tok in _split_sigil_chain(m.group(1)):
+            _add_sigil(tok)
+
+    # Main passes — seen_raw dedup prevents double-counting chain tokens
     for m in SIGIL_JOINED_RE.finditer(filename_no_ext):
         _add_sigil(m.group(0))
 
