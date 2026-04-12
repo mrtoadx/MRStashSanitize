@@ -413,6 +413,7 @@
           setReport(data);
           setSelected(new Set(data.pending.map(p => p.scene_id)));
           initStudioEnabled(data.pending);
+          setPhase("review"); // ← add this
         }
       }).catch(() => {});
       return () => { document.body.style.overflow = ""; };
