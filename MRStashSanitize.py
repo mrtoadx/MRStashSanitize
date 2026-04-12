@@ -54,6 +54,7 @@ def get_scenes_paginated(url, apikey, page=1, per_page=100):
           id title
           tags { id name }
           files { id path size }
+          studio { id name }
         }
       }
     }
@@ -84,40 +85,41 @@ def move_file(url, apikey, file_id, new_path):
     return res.get("data", {}).get("moveFiles", False)
 
 
+# ── Studio folder naming ───────────────────────────────────────────────────────
+
+def studio_to_folder_name(studio_name):
+    """
+    Convert a studio name to a CamelCase directory name with no spaces.
+    "Some Studio Name" → "SomeStudioName"
+    Already-camel or single-word names get their first char uppercased.
+    """
+    if not studio_name:
+        return ""
+    parts = re.split(r'[\s_\-]+', studio_name)
+    return "".join(p[:1].upper() + p[1:] for p in parts if p)
+
+
 # ── Token extraction ───────────────────────────────────────────────────────────
 
 # Sigil token patterns — a "sigil" is a leading _ or # that marks injected metadata.
-#
-# SIGIL_JOINED_RE: _Big_Ass or #Blow_Job  (Title_Case chain after sigil)
-#   Matched first so _Big_Ass isn't split into _Big + _Ass by the word pass.
 SIGIL_JOINED_RE = re.compile(
     r'(?<![A-Za-z0-9])'
     r'[_#]+'
     r'([A-Z][a-z]+(?:_[A-Z][a-z]+)+)'
     r'(?![A-Za-z0-9])'
 )
-# SIGIL_WORD_RE: _BigAss  #BlowJob  _HD  (single word, CamelCase allowed internally)
 SIGIL_WORD_RE = re.compile(
     r'(?<![A-Za-z0-9])'
     r'[_#]+'
     r'([A-Za-z][A-Za-z0-9]*)'
     r'(?![A-Za-z0-9])'
 )
-# SIGIL_NUM_RE: _4K  #720p  _1080p  _60fps  (digit-starting shorthands)
-#   Lookahead boundary used instead of lookbehind so "Word_4K_Next" is caught
-#   even though the _ is also the separator after the preceding word.
 SIGIL_NUM_RE = re.compile(r'[_#]+(\d+[A-Za-z]*)(?=[_\s#]|$)')
 
 
 def token_to_phrase(raw_token):
-    """Convert a raw token to a normalised phrase for tag lookup.
-
-    '_Big_Ass'  → 'big ass'
-    '#BlowJob'  → 'blow job'
-    '_4K'       → '4k'        (digit tokens lowercased as-is)
-    """
+    """Convert a raw token to a normalised phrase for tag lookup."""
     s = re.sub(r'^[_#]+', '', raw_token)
-    # Digit-starting shorthands: return lowercased directly
     if s and s[0].isdigit():
         return s.lower()
     parts = s.split('_')
@@ -128,15 +130,7 @@ def token_to_phrase(raw_token):
 
 
 def extract_candidate_tokens(filename_no_ext):
-    """Return (sigil_tokens, other_tokens).
-
-    sigil_tokens — every _/# prefixed token (joined, word, numeric).
-                   Caller partitions into tag-matched vs unmatched junk.
-    other_tokens — bare CamelCase / Title_Case tokens with no sigil.
-                   Only used as tag candidates, never treated as junk.
-
-    Both are lists of {"raw": str, "phrase": str}.
-    """
+    """Return (sigil_tokens, other_tokens)."""
     sigil_tokens = []
     other_tokens = []
     seen_raw     = set()
@@ -151,19 +145,15 @@ def extract_candidate_tokens(filename_no_ext):
             seen_phrases.add(phrase)
         sigil_tokens.append({"raw": raw, "phrase": phrase})
 
-    # Pass 1A: Title_Case chains  (_Big_Ass, #Blow_Job …) — must run before 1B
     for m in SIGIL_JOINED_RE.finditer(filename_no_ext):
         _add_sigil(m.group(0))
 
-    # Pass 1B: single CamelCase / simple words  (_BigAss, #HD …)
     for m in SIGIL_WORD_RE.finditer(filename_no_ext):
         _add_sigil(m.group(0))
 
-    # Pass 1C: digit shorthands  (_4K, #720p, _60fps …)
     for m in SIGIL_NUM_RE.finditer(filename_no_ext):
         _add_sigil(m.group(0))
 
-    # Pass 2: bare CamelCase words not already captured  (BlowJob, BigAss …)
     for m in re.finditer(r'[A-Z][a-z]+(?:[A-Z][a-z]+)+', filename_no_ext):
         raw = m.group(0)
         phrase = ' '.join(re.findall(r'[A-Z][a-z]+', raw)).lower()
@@ -172,7 +162,6 @@ def extract_candidate_tokens(filename_no_ext):
             seen_phrases.add(phrase)
             other_tokens.append({"raw": raw, "phrase": phrase})
 
-    # Pass 3: underscore-joined Title_Case words without a leading sigil
     for m in re.finditer(r'(?<![_#])\b([A-Z][a-z]+(?:_[A-Z][a-z]+)+)\b', filename_no_ext):
         raw = m.group(1)
         phrase = raw.replace('_', ' ').lower()
@@ -185,17 +174,11 @@ def extract_candidate_tokens(filename_no_ext):
 
 
 def build_new_filename(original_stem, tokens_to_remove):
-    """
-    Remove matched token strings from the filename stem, then clean up
-    leftover underscores / double spaces / leading-trailing junk.
-    """
     result = original_stem
-    # Sort longest-first so overlapping removals don't leave fragments
     sorted_tokens = sorted(tokens_to_remove, key=lambda t: len(t["raw"]), reverse=True)
     for tok in sorted_tokens:
         result = result.replace(tok["raw"], '')
 
-    # Clean up: collapse multiple underscores, trim leading/trailing punctuation
     result = re.sub(r'_+', '_', result)
     result = re.sub(r'^[_\-\s]+|[_\-\s]+$', '', result)
     result = re.sub(r'\s+', ' ', result).strip()
@@ -212,7 +195,6 @@ def task_scan(url, apikey):
     os.makedirs(ASSETS_DIR, exist_ok=True)
     _write_status({"status": "running", "message": "Loading config…", "progress": 0})
 
-    # Read plugin settings
     config_res = graphql_query(url, apikey, "query { configuration { plugins } }")
     plugins_cfg = config_res.get("data", {}).get("configuration", {}).get("plugins", {})
     my_cfg = plugins_cfg.get("MRStashSanitize", {})
@@ -225,7 +207,6 @@ def task_scan(url, apikey):
 
     _write_status({"status": "running", "message": "Scanning scenes…", "progress": 5})
 
-    # Paginate through all scenes
     page = 1
     per_page = 100
     total_count, first_batch = get_scenes_paginated(url, apikey, page, per_page)
@@ -265,9 +246,8 @@ def task_scan(url, apikey):
         if not all_candidates:
             continue
 
-        # Partition candidates into tag-matched vs unmatched sigil junk
-        matched = []           # has a Stash tag
-        unmatched_sigil = []   # sigil-bearing but no tag match → strip if setting on
+        matched = []
+        unmatched_sigil = []
 
         for c in sigil_tokens:
             phrase = c["phrase"]
@@ -290,15 +270,11 @@ def task_scan(url, apikey):
                     "tag_id": tag_lookup[phrase]["id"],
                     "tag_name": tag_lookup[phrase]["name"],
                 })
-            # non-sigil tokens that don't match a tag are left alone — they're
-            # likely real words in the title, not injected metadata
 
-        # Decide what to strip from the filename
         tokens_to_strip = list(matched)
         if strip_unmatched:
             tokens_to_strip.extend(unmatched_sigil)
 
-        # Skip scene if nothing would change
         if not tokens_to_strip and not matched:
             continue
 
@@ -309,15 +285,18 @@ def task_scan(url, apikey):
         existing_tag_ids = {t["id"] for t in scene.get("tags", [])}
         tags_to_add = [m for m in matched if m["tag_id"] not in existing_tag_ids]
         tags_already = [m for m in matched if m["tag_id"] in existing_tag_ids]
-
-        # All tag IDs the scene should end up with
         all_tag_ids = list(existing_tag_ids | {m["tag_id"] for m in matched})
 
-        # Only include scenes where something actually changes
         has_tag_changes    = len(tags_to_add) > 0
         has_file_changes   = new_basename != basename_orig
         if not has_tag_changes and not has_file_changes:
             continue
+
+        # ── Studio folder ──────────────────────────────────────────────────────
+        studio = scene.get("studio")
+        studio_folder = None
+        if studio and studio.get("name"):
+            studio_folder = studio_to_folder_name(studio["name"])
 
         pending.append({
             "scene_id": scene["id"],
@@ -328,12 +307,14 @@ def task_scan(url, apikey):
             "original_stem": stem,
             "new_stem": new_stem,
             "matched_tokens": matched,
-            "unmatched_tokens": unmatched_sigil,   # junk tokens with no tag
-            "stripped_unmatched": strip_unmatched,  # record what setting was active
+            "unmatched_tokens": unmatched_sigil,
+            "stripped_unmatched": strip_unmatched,
             "tags_to_add": tags_to_add,
             "tags_already_on_scene": tags_already,
             "all_tag_ids": all_tag_ids,
             "filename_changes": has_file_changes,
+            "studio_name": studio["name"] if studio else None,
+            "studio_folder": studio_folder,
         })
 
     report = {
@@ -385,13 +366,20 @@ def task_apply(url, apikey, args):
     for item in to_apply:
         sid = item["scene_id"]
         try:
-            # 1. Rename file via Stash moveFiles
-            if item.get("filename_changes") and item["original_path"] != item["new_path"]:
-                ok = move_file(url, apikey, item["file_id"], item["new_path"])
+            # Determine effective new path (studio folder aware)
+            new_path = item["new_path"]
+            studio_folder = item.get("studio_folder")
+            if studio_folder:
+                grandparent = os.path.dirname(os.path.dirname(item["original_path"]))
+                current_parent = os.path.basename(os.path.dirname(item["original_path"]))
+                if current_parent != studio_folder:
+                    new_path = os.path.join(grandparent, studio_folder, os.path.basename(new_path))
+
+            if item.get("filename_changes") and item["original_path"] != new_path:
+                ok = move_file(url, apikey, item["file_id"], new_path)
                 if not ok:
                     print(f"  WARNING: moveFiles returned false for scene {sid}", flush=True)
 
-            # 2. Update scene title (strip matched tokens AND unmatched junk from title)
             original_title = item.get("scene_title", "")
             new_title = original_title
             all_tokens_to_strip_from_title = list(item.get("matched_tokens", []))
@@ -403,17 +391,15 @@ def task_apply(url, apikey, args):
             if not new_title:
                 new_title = item["new_stem"]
 
-            # 3. Update tags
             all_tag_ids = item.get("all_tag_ids", [])
             update_scene(url, apikey, sid, new_title, all_tag_ids)
 
             done += 1
-            print(f"  ✓ Scene {sid}: {os.path.basename(item['original_path'])} → {os.path.basename(item['new_path'])}", flush=True)
+            print(f"  ✓ Scene {sid}: {os.path.basename(item['original_path'])} → {os.path.basename(new_path)}", flush=True)
         except Exception as e:
             errors += 1
             print(f"  ✗ Scene {sid}: {e}", flush=True)
 
-    # Update report — remove applied items from pending
     applied_ids = {item["scene_id"] for item in to_apply}
     report["pending"] = [p for p in pending if p["scene_id"] not in applied_ids]
     report["last_apply"] = {

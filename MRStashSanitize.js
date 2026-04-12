@@ -82,6 +82,42 @@
   function basename(p) { return p.split(/[\\/]/).pop(); }
   function dirname(p)  { const parts = p.split(/[\\/]/); parts.pop(); return parts.join("/"); }
 
+  /**
+   * Convert a studio name to a CamelCase directory name.
+   * "Some Studio Name" → "SomeStudioName"
+   * Already-camel or single-word names are returned unchanged (first char uppercased).
+   */
+  function studioToFolderName(studioName) {
+    if (!studioName) return "";
+    return studioName
+      .split(/[\s_\-]+/)
+      .filter(Boolean)
+      .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+      .join("");
+  }
+
+  /**
+   * Given a scene's current path and a studio folder name, compute the new path.
+   * Replaces only the immediate parent directory of the file.
+   * e.g. /media/videos/RandomFolder/scene.mp4 → /media/videos/SomeStudio/scene.mp4
+   */
+  function applyStudioFolder(currentPath, studioFolder) {
+    const grandparent = dirname(dirname(currentPath));
+    const file = basename(currentPath);
+    return grandparent + "/" + studioFolder + "/" + file;
+  }
+
+  /**
+   * Sanitize a title string into a safe filename stem.
+   * Strips characters that are illegal on most filesystems.
+   */
+  function titleToStem(title) {
+    return title
+      .replace(/[/\\:*?"<>|]/g, "")   // illegal filename chars
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
   // ── Icons ─────────────────────────────────────────────────────────────────────
 
   const IconScan  = () => ce("svg",{xmlns:"http://www.w3.org/2000/svg",viewBox:"0 0 24 24",width:16,height:16,fill:"none",stroke:"currentColor",strokeWidth:2,strokeLinecap:"round",strokeLinejoin:"round"},ce("circle",{cx:11,cy:11,r:8}),ce("line",{x1:21,y1:21,x2:16.65,y2:16.65}));
@@ -92,6 +128,18 @@
   const IconEdit  = () => ce("svg",{xmlns:"http://www.w3.org/2000/svg",viewBox:"0 0 24 24",width:13,height:13,fill:"none",stroke:"currentColor",strokeWidth:2,strokeLinecap:"round",strokeLinejoin:"round"},ce("path",{d:"M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"}),ce("path",{d:"M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"}));
   const IconPlus  = () => ce("svg",{xmlns:"http://www.w3.org/2000/svg",viewBox:"0 0 24 24",width:11,height:11,fill:"none",stroke:"currentColor",strokeWidth:2.5,strokeLinecap:"round",strokeLinejoin:"round"},ce("line",{x1:12,y1:5,x2:12,y2:19}),ce("line",{x1:5,y1:12,x2:19,y2:12}));
   const IconSpinner = () => ce("div", { className: "ss-spinner" });
+
+  // Title-as-filename icon (document with arrow)
+  const IconTitleFile = () => ce("svg",{xmlns:"http://www.w3.org/2000/svg",viewBox:"0 0 24 24",width:12,height:12,fill:"none",stroke:"currentColor",strokeWidth:2,strokeLinecap:"round",strokeLinejoin:"round"},
+    ce("path",{d:"M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"}),
+    ce("polyline",{points:"14 2 14 8 20 8"}),
+    ce("line",{x1:9,y1:15,x2:15,y2:15})
+  );
+
+  // Studio/folder icon
+  const IconFolder = () => ce("svg",{xmlns:"http://www.w3.org/2000/svg",viewBox:"0 0 24 24",width:12,height:12,fill:"none",stroke:"currentColor",strokeWidth:2,strokeLinecap:"round",strokeLinejoin:"round"},
+    ce("path",{d:"M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"})
+  );
 
   // ── Tag chip ──────────────────────────────────────────────────────────────────
 
@@ -140,8 +188,16 @@
     const origBase = basename(item.original_path);
     const ext      = origBase.includes(".") ? origBase.slice(origBase.lastIndexOf(".")) : "";
 
-    // If there's an override use it, otherwise the computed new_stem
     const displayStem = overrideStem !== undefined ? overrideStem : item.new_stem;
+
+    // "Use title as filename" — derive stem from scene title
+    function handleUseTitle() {
+      const stem = titleToStem(item.scene_title || "");
+      if (stem) onChangeStem(stem);
+    }
+
+    // "Use studio folder" — update overrideStem to include studio dir in path display
+    // (studio folder is shown separately; this button is on the path row)
 
     return ce("div", { className: "ss-filename-change" },
       // FROM row (static)
@@ -161,6 +217,51 @@
             spellCheck: false,
           }),
           ce("code", { className: "ss-fname-ext" }, ext)
+        ),
+        // Use title button
+        item.scene_title && ce("button", {
+          className: "ss-title-file-btn",
+          title: `Use scene title as filename: "${item.scene_title}"`,
+          onClick: handleUseTitle,
+        },
+          ce(IconTitleFile), " Use Title"
+        )
+      )
+    );
+  }
+
+  // ── Studio folder badge ───────────────────────────────────────────────────────
+
+  /**
+   * Shows the proposed studio folder move and a toggle to enable/disable it.
+   * studioFolder: the CamelCase folder name string (e.g. "SomeStudioName")
+   * enabled: bool
+   * onToggle: () => void
+   * currentPath: original file path (to show where it would move)
+   */
+  function StudioFolderBadge({ studioFolder, enabled, onToggle, currentPath }) {
+    const currentParent = basename(dirname(currentPath));
+    const alreadyThere  = currentParent === studioFolder;
+
+    if (alreadyThere) {
+      return ce("div", { className: "ss-studio-badge ss-studio-badge-ok" },
+        ce(IconFolder), " Already in studio folder: ", ce("code", null, studioFolder)
+      );
+    }
+
+    return ce("div", { className: `ss-studio-badge ${enabled ? "ss-studio-badge-on" : "ss-studio-badge-off"}` },
+      ce("button", {
+        className: `ss-studio-toggle ${enabled ? "ss-studio-toggle-on" : ""}`,
+        onClick: onToggle,
+        title: enabled ? "Disable studio folder move" : "Enable studio folder move",
+      },
+        enabled ? ce(IconCheck) : ce(IconFolder)
+      ),
+      ce("span", null,
+        ce(IconFolder), " Move to studio folder: ",
+        ce("code", null, studioFolder),
+        ce("span", { className: "ss-studio-from" },
+          ` (currently in: ${currentParent})`
         )
       )
     );
@@ -168,28 +269,25 @@
 
   // ── Single scene row ──────────────────────────────────────────────────────────
 
-  function SceneRow({ item, selected, onToggle, onApplyOne, overrideStem, onChangeStem }) {
+  function SceneRow({ item, selected, onToggle, onApplyOne, overrideStem, onChangeStem, studioEnabled, onToggleStudio }) {
     const [applying, setApplying]       = useState(false);
     const [applyDone, setApplyDone]     = useState(false);
     const [applyErr, setApplyErr]       = useState("");
-    // local junk tokens state so promoting updates this row in place
     const [junkTokens, setJunkTokens]   = useState(item.unmatched_tokens || []);
-    const [promotedTags, setPromotedTags] = useState([]); // {tag_id, tag_name}
-    const [promoting, setPromoting]     = useState(null); // raw token being promoted
+    const [promotedTags, setPromotedTags] = useState([]);
+    const [promoting, setPromoting]     = useState(null);
 
     const newTags      = item.tags_to_add || [];
     const existingTags = item.tags_already_on_scene || [];
     const strippedJunk = item.stripped_unmatched;
+    const studioFolder = item.studio_folder || null;
 
     async function handlePromote(raw, phrase) {
       setPromoting(raw);
       try {
         const tag = await createTag(phrase);
-        // Remove from junk list, add to promoted tags
         setJunkTokens(prev => prev.filter(t => t.raw !== raw));
         setPromotedTags(prev => [...prev, { tag_id: tag.id, tag_name: tag.name }]);
-        // Tell parent to incorporate this tag into the item's all_tag_ids
-        // We surface this upward so apply picks it up
         onApplyOne && onApplyOne(item.scene_id, "add_tag", { tag_id: tag.id, tag_name: tag.name });
       } catch (e) {
         WARN("Promote failed:", e);
@@ -202,7 +300,7 @@
       setApplying(true);
       setApplyErr("");
       try {
-        await onApplyOne(item.scene_id, "apply", { overrideStem });
+        await onApplyOne(item.scene_id, "apply", { overrideStem, studioEnabled });
         setApplyDone(true);
       } catch (e) {
         setApplyErr(e.message || "Apply failed");
@@ -243,6 +341,14 @@
             })
           : ce("div", { className: "ss-no-rename" }, "Filename unchanged — tags only"),
 
+        // Studio folder row
+        studioFolder && ce(StudioFolderBadge, {
+          studioFolder,
+          enabled: studioEnabled,
+          onToggle: onToggleStudio,
+          currentPath: item.original_path,
+        }),
+
         // Tags + junk chips
         (newTags.length > 0 || existingTags.length > 0 || junkTokens.length > 0 || promotedTags.length > 0) &&
           ce("div", { className: "ss-tags-row" },
@@ -265,7 +371,6 @@
 
       // Per-row actions
       ce("div", { className: "ss-row-actions" },
-        // Apply this one button
         ce("button", {
           className: "ss-icon-btn ss-icon-btn-apply",
           title: "Apply this scene only",
@@ -274,7 +379,6 @@
         },
           applying ? ce(IconSpinner) : ce(IconPlay)
         ),
-        // Select toggle
         ce("button", {
           className: `ss-icon-btn ${selected ? "ss-icon-btn-active" : ""}`,
           onClick: onToggle,
@@ -290,16 +394,15 @@
     const [phase, setPhase]             = useState("idle");
     const [scanStatus, setScanStatus]   = useState(null);
     const [report, setReport]           = useState(null);
-    // Map of scene_id → override stem string (if user edited)
     const [stemOverrides, setStemOverrides] = useState({});
-    // Map of scene_id → extra tag ids added via junk promotion
     const [extraTags, setExtraTags]     = useState({});
     const [selected, setSelected]       = useState(new Set());
+    // Map of scene_id → bool: whether studio folder move is enabled for that scene
+    const [studioEnabled, setStudioEnabled] = useState({});
     const [applyMsg, setApplyMsg]       = useState("");
     const [errorMsg, setErrorMsg]       = useState("");
     const [filter, setFilter]           = useState("all");
     const [search, setSearch]           = useState("");
-    // Set of scene_ids that have been individually applied
     const [appliedIds, setAppliedIds]   = useState(new Set());
     const cancelRef = useRef(null);
 
@@ -309,11 +412,23 @@
         if (data && data.status === "done" && data.pending && data.pending.length > 0) {
           setReport(data);
           setSelected(new Set(data.pending.map(p => p.scene_id)));
-          setPhase("review");
+          initStudioEnabled(data.pending);
         }
       }).catch(() => {});
       return () => { document.body.style.overflow = ""; };
     }, []);
+
+    function initStudioEnabled(pending) {
+      const map = {};
+      for (const p of pending) {
+        if (p.studio_folder) {
+          const currentParent = basename(dirname(p.original_path));
+          // Default ON only if not already in the right folder
+          map[p.scene_id] = currentParent !== p.studio_folder;
+        }
+      }
+      setStudioEnabled(map);
+    }
 
     // ── Scan ──────────────────────────────────────────────────────────────────
 
@@ -325,6 +440,7 @@
       setSelected(new Set());
       setStemOverrides({});
       setExtraTags({});
+      setStudioEnabled({});
       setAppliedIds(new Set());
       setErrorMsg("");
       setApplyMsg("");
@@ -345,6 +461,7 @@
           if (r) {
             setReport(r);
             setSelected(new Set(r.pending.map(p => p.scene_id)));
+            initStudioEnabled(r.pending);
           }
           setPhase("review");
         },
@@ -353,13 +470,8 @@
       );
     }
 
-    // ── Per-row callback: add_tag or apply ────────────────────────────────────
+    // ── Per-row callback ──────────────────────────────────────────────────────
 
-    /**
-     * Called by SceneRow for two purposes:
-     *   mode="add_tag" → store an extra promoted tag for this scene
-     *   mode="apply"   → actually apply just this one scene
-     */
     async function handleRowAction(sceneId, mode, payload) {
       if (mode === "add_tag") {
         setExtraTags(prev => ({
@@ -370,32 +482,28 @@
       }
 
       if (mode === "apply") {
-        // Build the effective item
         const item = (report.pending || []).find(p => p.scene_id === sceneId);
         if (!item) return;
 
+        const origBase = basename(item.original_path);
+        const ext = origBase.includes(".") ? origBase.slice(origBase.lastIndexOf(".")) : "";
         const overrideStem = payload.overrideStem;
-        const ext          = basename(item.original_path).includes(".")
-          ? basename(item.original_path).slice(basename(item.original_path).lastIndexOf("."))
-          : "";
         const effectiveStem = (overrideStem !== undefined && overrideStem !== item.new_stem)
           ? overrideStem
           : item.new_stem;
-        const newBasename  = effectiveStem + ext;
-        const newPath      = dirname(item.original_path) + "/" + newBasename;
 
-        // Merge any promoted tag ids
+        // Determine destination folder
+        let destDir = dirname(item.original_path);
+        if (payload.studioEnabled && item.studio_folder) {
+          destDir = dirname(dirname(item.original_path)) + "/" + item.studio_folder;
+        }
+
+        const newPath = destDir + "/" + effectiveStem + ext;
         const promoted = extraTags[sceneId] || [];
         const allTagIds = [...new Set([...item.all_tag_ids, ...promoted])];
 
-        // Fire apply for this single scene via plugin task, passing custom path too
-        // We send it as a single scene_ids and override via a custom arg
-        // Actually: we build a mini-apply payload and do it ourselves via GraphQL
-        // because the python task has no way to receive a per-scene new_path override.
-        // So we'll call the mutations directly from JS.
         await applySingleScene(item, newPath, allTagIds);
         setAppliedIds(prev => new Set([...prev, sceneId]));
-        // Remove from pending in local state
         setReport(prev => ({
           ...prev,
           pending: (prev.pending || []).filter(p => p.scene_id !== sceneId),
@@ -404,14 +512,7 @@
       }
     }
 
-    /**
-     * Apply a single scene directly via GraphQL mutations (no Python needed).
-     * This lets us pass arbitrary new_path without modifying the Python plugin.
-     */
     async function applySingleScene(item, newPath, allTagIds) {
-      // 1. Rename file if needed
-      // MoveFilesInput uses destination_folder (directory) + destination_basename (filename),
-      // NOT a single "destination" full-path field.
       if (item.filename_changes && item.original_path !== newPath) {
         const destFolder   = dirname(newPath);
         const destBasename = basename(newPath);
@@ -422,7 +523,6 @@
         `, { input: { ids: [item.file_id], destination_folder: destFolder, destination_basename: destBasename } });
       }
 
-      // 2. Build new title
       let newTitle = item.scene_title || "";
       const tokensToStrip = [...(item.matched_tokens || [])];
       if (item.stripped_unmatched) tokensToStrip.push(...(item.unmatched_tokens || []));
@@ -431,7 +531,6 @@
       }
       newTitle = newTitle.replace(/\s+/g, " ").trim() || basename(newPath).replace(/\.[^.]+$/, "");
 
-      // 3. Update scene
       await gqlQuery(`
         mutation SceneUpdate($input: SceneUpdateInput!) {
           sceneUpdate(input: $input) { id }
@@ -456,12 +555,18 @@
 
       for (const item of toApply) {
         try {
+          const origBase = basename(item.original_path);
+          const ext = origBase.includes(".") ? origBase.slice(origBase.lastIndexOf(".")) : "";
           const overrideStem = stemOverrides[item.scene_id];
-          const ext = basename(item.original_path).includes(".")
-            ? basename(item.original_path).slice(basename(item.original_path).lastIndexOf("."))
-            : "";
           const effectiveStem = (overrideStem !== undefined) ? overrideStem : item.new_stem;
-          const newPath = dirname(item.original_path) + "/" + effectiveStem + ext;
+
+          // Determine destination folder
+          let destDir = dirname(item.original_path);
+          if (studioEnabled[item.scene_id] && item.studio_folder) {
+            destDir = dirname(dirname(item.original_path)) + "/" + item.studio_folder;
+          }
+
+          const newPath = destDir + "/" + effectiveStem + ext;
           const promoted = extraTags[item.scene_id] || [];
           const allTagIds = [...new Set([...item.all_tag_ids, ...promoted])];
           await applySingleScene(item, newPath, allTagIds);
@@ -472,7 +577,6 @@
         }
       }
 
-      // Remove applied from local pending
       setReport(prev => ({
         ...prev,
         pending: (prev.pending || []).filter(p => !selected.has(p.scene_id)),
@@ -497,12 +601,17 @@
       });
     }
 
+    function toggleStudio(id) {
+      setStudioEnabled(prev => ({ ...prev, [id]: !prev[id] }));
+    }
+
     // ── Derived data ──────────────────────────────────────────────────────────
 
     const pending  = (report && report.pending) || [];
     const filtered = pending.filter(p => {
       if (filter === "filename" && !p.filename_changes) return false;
       if (filter === "tagsonly" &&  p.filename_changes) return false;
+      if (filter === "studio"  && !p.studio_folder)    return false;
       if (search) {
         const q = search.toLowerCase();
         if (!(p.scene_title + p.original_path).toLowerCase().includes(q)) return false;
@@ -511,6 +620,7 @@
     });
 
     const allFilteredSelected = filtered.length > 0 && filtered.every(p => selected.has(p.scene_id));
+    const studioCount = pending.filter(p => p.studio_folder).length;
 
     // ── Render ────────────────────────────────────────────────────────────────
 
@@ -549,6 +659,9 @@
             ),
             report.total_scanned && ce("span", { className: "ss-stat-muted" },
               ` of ${report.total_scanned} scanned`
+            ),
+            studioCount > 0 && ce("span", { className: "ss-stat-studio" },
+              ce(IconFolder), ` ${studioCount} with studio folder`
             )
           )
         ),
@@ -573,12 +686,17 @@
             ),
 
             ce("div", { className: "ss-filter-group" },
-              ["all", "filename", "tagsonly"].map(f =>
+              [
+                { key: "all",      label: "All" },
+                { key: "filename", label: "Rename" },
+                { key: "tagsonly", label: "Tags Only" },
+                { key: "studio",   label: `Studio (${studioCount})` },
+              ].map(f =>
                 ce("button", {
-                  key: f,
-                  className: `ss-filter-btn ${filter === f ? "ss-filter-active" : ""}`,
-                  onClick: () => setFilter(f),
-                }, f === "all" ? "All" : f === "filename" ? "Rename" : "Tags Only")
+                  key: f.key,
+                  className: `ss-filter-btn ${filter === f.key ? "ss-filter-active" : ""}`,
+                  onClick: () => setFilter(f.key),
+                }, f.label)
               )
             ),
 
@@ -604,6 +722,8 @@
                     onApplyOne: handleRowAction,
                     overrideStem: stemOverrides[item.scene_id],
                     onChangeStem: val => setStemOverrides(prev => ({ ...prev, [item.scene_id]: val })),
+                    studioEnabled: studioEnabled[item.scene_id] || false,
+                    onToggleStudio: () => toggleStudio(item.scene_id),
                   })
                 )
           )
