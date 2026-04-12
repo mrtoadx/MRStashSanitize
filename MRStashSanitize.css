@@ -19,7 +19,7 @@
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 12px;
   width: 100%;
-  max-width: 860px;
+  max-width: 900px;
   max-height: 92vh;
   display: flex;
   flex-direction: column;
@@ -264,6 +264,28 @@
   border-color: rgba(79, 195, 247, 0.2);
 }
 
+/* Applied row — fades out to a compact confirmation */
+.ss-row-done {
+  padding: 8px 12px;
+  background: rgba(76, 175, 80, 0.04);
+  border-color: rgba(76, 175, 80, 0.15);
+  opacity: 0.55;
+}
+
+.ss-row-done-msg {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #4caf50;
+}
+
+.ss-row-err {
+  margin-top: 4px;
+  font-size: 11px;
+  color: #f44336;
+}
+
 .ss-row-check {
   padding-top: 2px;
   flex-shrink: 0;
@@ -282,6 +304,7 @@
   flex-shrink: 0;
   display: flex;
   align-items: flex-start;
+  gap: 4px;
   padding-top: 2px;
 }
 
@@ -296,11 +319,23 @@
   align-items: center;
   transition: color 0.12s, border-color 0.12s, background 0.12s;
 }
-.ss-icon-btn:hover { color: #ccc; border-color: rgba(255,255,255,0.2); }
+.ss-icon-btn:hover:not(:disabled) { color: #ccc; border-color: rgba(255,255,255,0.2); }
+.ss-icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
 .ss-icon-btn-active {
   background: rgba(79, 195, 247, 0.12);
   border-color: rgba(79, 195, 247, 0.35);
   color: #4fc3f7;
+}
+
+/* Per-row Apply button gets a slight green tint */
+.ss-icon-btn-apply {
+  color: #555;
+}
+.ss-icon-btn-apply:hover:not(:disabled) {
+  color: #81c784;
+  border-color: rgba(129, 199, 132, 0.4);
+  background: rgba(76, 175, 80, 0.08);
 }
 
 .ss-scene-title {
@@ -357,10 +392,45 @@
   border: 1px solid rgba(244, 67, 54, 0.15);
 }
 
-.ss-fname-new {
-  background: rgba(76, 175, 80, 0.08);
+/* Inline editable filename */
+.ss-fname-edit-wrap {
+  display: flex;
+  align-items: baseline;
+  gap: 1px;
+  flex: 1;
+  min-width: 0;
+}
+
+.ss-fname-input {
+  font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+  font-size: 11.5px;
+  padding: 2px 6px;
+  border-radius: 3px 0 0 3px;
+  border: 1px solid rgba(76, 175, 80, 0.25);
+  background: rgba(76, 175, 80, 0.06);
   color: #81c784;
+  outline: none;
+  flex: 1;
+  min-width: 0;
+  word-break: break-all;
+  transition: border-color 0.15s, background 0.15s;
+}
+.ss-fname-input:focus {
+  border-color: rgba(76, 175, 80, 0.5);
+  background: rgba(76, 175, 80, 0.1);
+}
+
+.ss-fname-ext {
+  font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+  font-size: 11.5px;
+  padding: 2px 6px 2px 4px;
+  border-radius: 0 3px 3px 0;
   border: 1px solid rgba(76, 175, 80, 0.15);
+  border-left: none;
+  background: rgba(76, 175, 80, 0.04);
+  color: #4a7a4e;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .ss-no-rename {
@@ -400,12 +470,41 @@
   color: #666;
 }
 
-/* Junk / unmatched sigil token — will be stripped, no tag created */
+/* Junk token chip */
 .ss-tag-junk {
   background: rgba(255, 152, 0, 0.08);
   border: 1px solid rgba(255, 152, 0, 0.22);
   color: #888;
   font-style: italic;
+  padding-right: 3px; /* tighter right to accommodate the button */
+}
+
+.ss-tag-junk-promoting {
+  opacity: 0.6;
+}
+
+/* Promote-to-tag button inside the junk chip */
+.ss-junk-promote-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 152, 0, 0.15);
+  border: 1px solid rgba(255, 152, 0, 0.3);
+  border-radius: 2px;
+  color: #ffb74d;
+  cursor: pointer;
+  padding: 1px 3px;
+  margin-left: 3px;
+  line-height: 1;
+  transition: background 0.12s, color 0.12s;
+}
+.ss-junk-promote-btn:hover:not(:disabled) {
+  background: rgba(255, 152, 0, 0.3);
+  color: #ffe0b2;
+}
+.ss-junk-promote-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* Action bar */
@@ -438,6 +537,14 @@
   animation: ss-spin 0.7s linear infinite;
   flex-shrink: 0;
 }
+
+/* Extra-small spinner for inline use (inside junk promote button) */
+.ss-spinner-xs {
+  width: 10px;
+  height: 10px;
+  border-width: 1.5px;
+}
+
 @keyframes ss-spin { to { transform: rotate(360deg); } }
 
 /* Empty state */

@@ -34,6 +34,18 @@
     );
   }
 
+  /**
+   * Create a new tag in Stash and return its id.
+   */
+  async function createTag(name) {
+    const data = await gqlQuery(`
+      mutation TagCreate($input: TagCreateInput!) {
+        tagCreate(input: $input) { id name }
+      }
+    `, { input: { name } });
+    return data.tagCreate;
+  }
+
   // ── Asset polling ─────────────────────────────────────────────────────────────
 
   async function fetchAssetJSON(filename) {
@@ -68,54 +80,18 @@
   // ── Helpers ───────────────────────────────────────────────────────────────────
 
   function basename(p) { return p.split(/[\\/]/).pop(); }
+  function dirname(p)  { const parts = p.split(/[\\/]/); parts.pop(); return parts.join("/"); }
 
-  function diffHighlight(original, updated) {
-    // Return segments: [{text, changed}]
-    if (original === updated) return [{ text: original, changed: false }];
-    // Simple character diff — highlight what was removed
-    const segs = [];
-    let i = 0, j = 0;
-    // find common prefix
-    while (i < original.length && j < updated.length && original[i] === updated[j]) { i++; j++; }
-    if (i > 0) segs.push({ text: original.slice(0, i), changed: false });
-    // find common suffix
-    let si = original.length - 1, sj = updated.length - 1;
-    while (si > i && sj > j && original[si] === updated[sj]) { si--; sj--; }
-    const removedPart = original.slice(i, si + 1);
-    const addedPart   = updated.slice(j, sj + 1);
-    if (removedPart) segs.push({ text: removedPart, changed: "removed" });
-    if (addedPart)   segs.push({ text: addedPart,   changed: "added" });
-    const suffix = original.slice(si + 1);
-    if (suffix) segs.push({ text: suffix, changed: false });
-    return segs;
-  }
+  // ── Icons ─────────────────────────────────────────────────────────────────────
 
-  // ── Icons (inline SVG) ────────────────────────────────────────────────────────
-
-  const IconScan    = () => ce("svg",{xmlns:"http://www.w3.org/2000/svg",viewBox:"0 0 24 24",width:16,height:16,fill:"none",stroke:"currentColor",strokeWidth:2,strokeLinecap:"round",strokeLinejoin:"round"},ce("circle",{cx:11,cy:11,r:8}),ce("line",{x1:21,y1:21,x2:16.65,y2:16.65}));
-  const IconCheck   = () => ce("svg",{xmlns:"http://www.w3.org/2000/svg",viewBox:"0 0 24 24",width:14,height:14,fill:"none",stroke:"currentColor",strokeWidth:2.5,strokeLinecap:"round",strokeLinejoin:"round"},ce("polyline",{points:"20 6 9 17 4 12"}));
-  const IconX       = () => ce("svg",{xmlns:"http://www.w3.org/2000/svg",viewBox:"0 0 24 24",width:14,height:14,fill:"none",stroke:"currentColor",strokeWidth:2.5,strokeLinecap:"round",strokeLinejoin:"round"},ce("line",{x1:18,y1:6,x2:6,y2:18}),ce("line",{x1:6,y1:6,x2:18,y2:18}));
-  const IconTag     = () => ce("svg",{xmlns:"http://www.w3.org/2000/svg",viewBox:"0 0 24 24",width:12,height:12,fill:"none",stroke:"currentColor",strokeWidth:2,strokeLinecap:"round",strokeLinejoin:"round"},ce("path",{d:"M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"}),ce("line",{x1:7,y1:7,x2:"7.01",y2:7}));
-  const IconArrow   = () => ce("svg",{xmlns:"http://www.w3.org/2000/svg",viewBox:"0 0 24 24",width:14,height:14,fill:"none",stroke:"currentColor",strokeWidth:2,strokeLinecap:"round",strokeLinejoin:"round"},ce("line",{x1:5,y1:12,x2:19,y2:12}),ce("polyline",{points:"12 5 19 12 12 19"}));
-
-  // ── Junk chip (unmatched sigil token) ────────────────────────────────────────
-
-  function JunkChip({ raw }) {
-    return ce("span", {
-      className: "ss-tag-chip ss-tag-junk",
-      title: "Sigil token with no matching tag — will be stripped from filename",
-    },
-      ce("svg", { xmlns: "http://www.w3.org/2000/svg", viewBox: "0 0 24 24", width: 11, height: 11,
-        fill: "none", stroke: "currentColor", strokeWidth: 2.5,
-        strokeLinecap: "round", strokeLinejoin: "round" },
-        ce("polyline", { points: "3 6 5 6 21 6" }),
-        ce("path", { d: "M19 6l-1 14H6L5 6" }),
-        ce("path", { d: "M10 11v6M14 11v6" }),
-        ce("path", { d: "M9 6V4h6v2" })
-      ),
-      " ", raw
-    );
-  }
+  const IconScan  = () => ce("svg",{xmlns:"http://www.w3.org/2000/svg",viewBox:"0 0 24 24",width:16,height:16,fill:"none",stroke:"currentColor",strokeWidth:2,strokeLinecap:"round",strokeLinejoin:"round"},ce("circle",{cx:11,cy:11,r:8}),ce("line",{x1:21,y1:21,x2:16.65,y2:16.65}));
+  const IconCheck = () => ce("svg",{xmlns:"http://www.w3.org/2000/svg",viewBox:"0 0 24 24",width:14,height:14,fill:"none",stroke:"currentColor",strokeWidth:2.5,strokeLinecap:"round",strokeLinejoin:"round"},ce("polyline",{points:"20 6 9 17 4 12"}));
+  const IconX     = () => ce("svg",{xmlns:"http://www.w3.org/2000/svg",viewBox:"0 0 24 24",width:14,height:14,fill:"none",stroke:"currentColor",strokeWidth:2.5,strokeLinecap:"round",strokeLinejoin:"round"},ce("line",{x1:18,y1:6,x2:6,y2:18}),ce("line",{x1:6,y1:6,x2:18,y2:18}));
+  const IconTag   = () => ce("svg",{xmlns:"http://www.w3.org/2000/svg",viewBox:"0 0 24 24",width:12,height:12,fill:"none",stroke:"currentColor",strokeWidth:2,strokeLinecap:"round",strokeLinejoin:"round"},ce("path",{d:"M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"}),ce("line",{x1:7,y1:7,x2:"7.01",y2:7}));
+  const IconPlay  = () => ce("svg",{xmlns:"http://www.w3.org/2000/svg",viewBox:"0 0 24 24",width:14,height:14,fill:"none",stroke:"currentColor",strokeWidth:2,strokeLinecap:"round",strokeLinejoin:"round"},ce("polygon",{points:"5 3 19 12 5 21 5 3"}));
+  const IconEdit  = () => ce("svg",{xmlns:"http://www.w3.org/2000/svg",viewBox:"0 0 24 24",width:13,height:13,fill:"none",stroke:"currentColor",strokeWidth:2,strokeLinecap:"round",strokeLinejoin:"round"},ce("path",{d:"M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"}),ce("path",{d:"M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"}));
+  const IconPlus  = () => ce("svg",{xmlns:"http://www.w3.org/2000/svg",viewBox:"0 0 24 24",width:11,height:11,fill:"none",stroke:"currentColor",strokeWidth:2.5,strokeLinecap:"round",strokeLinejoin:"round"},ce("line",{x1:12,y1:5,x2:12,y2:19}),ce("line",{x1:5,y1:12,x2:19,y2:12}));
+  const IconSpinner = () => ce("div", { className: "ss-spinner" });
 
   // ── Tag chip ──────────────────────────────────────────────────────────────────
 
@@ -124,36 +100,124 @@
       className: `ss-tag-chip ${isNew ? "ss-tag-new" : "ss-tag-existing"}`,
       title: isNew ? "Will be added" : "Already on scene",
     },
-      ce(IconTag),
-      " ", name
+      ce(IconTag), " ", name
     );
   }
 
-  // ── FilenameChange ────────────────────────────────────────────────────────────
+  // ── Junk chip — with "promote to tag" button ──────────────────────────────────
 
-  function FilenameChange({ item }) {
-    const origBase = basename(item.original_path);
-    const newBase  = basename(item.new_path);
-
-    return ce("div", { className: "ss-filename-change" },
-      ce("div", { className: "ss-filename-row" },
-        ce("span", { className: "ss-fname-label" }, "FROM"),
-        ce("code", { className: "ss-fname ss-fname-old" }, origBase)
+  function JunkChip({ raw, phrase, onPromote, promoting }) {
+    return ce("span", {
+      className: `ss-tag-chip ss-tag-junk ${promoting ? "ss-tag-junk-promoting" : ""}`,
+      title: promoting
+        ? "Creating tag…"
+        : `Sigil token with no matching tag — click + to create "${phrase}" as a Stash tag`,
+    },
+      ce("svg",{xmlns:"http://www.w3.org/2000/svg",viewBox:"0 0 24 24",width:11,height:11,fill:"none",stroke:"currentColor",strokeWidth:2.5,strokeLinecap:"round",strokeLinejoin:"round"},
+        ce("polyline",{points:"3 6 5 6 21 6"}),
+        ce("path",{d:"M19 6l-1 14H6L5 6"}),
+        ce("path",{d:"M10 11v6M14 11v6"}),
+        ce("path",{d:"M9 6V4h6v2"})
       ),
-      ce("div", { className: "ss-filename-row" },
-        ce("span", { className: "ss-fname-label" }, "TO"),
-        ce("code", { className: "ss-fname ss-fname-new" }, newBase)
+      " ", raw,
+      " ",
+      ce("button", {
+        className: "ss-junk-promote-btn",
+        title: `Create "${phrase}" tag and add to scene`,
+        disabled: promoting,
+        onClick: e => { e.stopPropagation(); onPromote(raw, phrase); },
+      },
+        promoting
+          ? ce("div", { className: "ss-spinner ss-spinner-xs" })
+          : ce(IconPlus)
       )
     );
   }
 
-  // ── Row ───────────────────────────────────────────────────────────────────────
+  // ── Inline filename editor ────────────────────────────────────────────────────
 
-  function SceneRow({ item, selected, onToggle }) {
+  function FilenameEditor({ item, overrideStem, onChangeStem }) {
+    const origBase = basename(item.original_path);
+    const ext      = origBase.includes(".") ? origBase.slice(origBase.lastIndexOf(".")) : "";
+
+    // If there's an override use it, otherwise the computed new_stem
+    const displayStem = overrideStem !== undefined ? overrideStem : item.new_stem;
+
+    return ce("div", { className: "ss-filename-change" },
+      // FROM row (static)
+      ce("div", { className: "ss-filename-row" },
+        ce("span", { className: "ss-fname-label" }, "FROM"),
+        ce("code", { className: "ss-fname ss-fname-old" }, origBase)
+      ),
+      // TO row (editable)
+      ce("div", { className: "ss-filename-row" },
+        ce("span", { className: "ss-fname-label" }, "TO"),
+        ce("div", { className: "ss-fname-edit-wrap" },
+          ce("input", {
+            className: "ss-fname-input",
+            type: "text",
+            value: displayStem,
+            onChange: e => onChangeStem(e.target.value),
+            spellCheck: false,
+          }),
+          ce("code", { className: "ss-fname-ext" }, ext)
+        )
+      )
+    );
+  }
+
+  // ── Single scene row ──────────────────────────────────────────────────────────
+
+  function SceneRow({ item, selected, onToggle, onApplyOne, overrideStem, onChangeStem }) {
+    const [applying, setApplying]       = useState(false);
+    const [applyDone, setApplyDone]     = useState(false);
+    const [applyErr, setApplyErr]       = useState("");
+    // local junk tokens state so promoting updates this row in place
+    const [junkTokens, setJunkTokens]   = useState(item.unmatched_tokens || []);
+    const [promotedTags, setPromotedTags] = useState([]); // {tag_id, tag_name}
+    const [promoting, setPromoting]     = useState(null); // raw token being promoted
+
     const newTags      = item.tags_to_add || [];
     const existingTags = item.tags_already_on_scene || [];
-    const junkTokens   = item.unmatched_tokens || [];
     const strippedJunk = item.stripped_unmatched;
+
+    async function handlePromote(raw, phrase) {
+      setPromoting(raw);
+      try {
+        const tag = await createTag(phrase);
+        // Remove from junk list, add to promoted tags
+        setJunkTokens(prev => prev.filter(t => t.raw !== raw));
+        setPromotedTags(prev => [...prev, { tag_id: tag.id, tag_name: tag.name }]);
+        // Tell parent to incorporate this tag into the item's all_tag_ids
+        // We surface this upward so apply picks it up
+        onApplyOne && onApplyOne(item.scene_id, "add_tag", { tag_id: tag.id, tag_name: tag.name });
+      } catch (e) {
+        WARN("Promote failed:", e);
+      } finally {
+        setPromoting(null);
+      }
+    }
+
+    async function handleApplyThis() {
+      setApplying(true);
+      setApplyErr("");
+      try {
+        await onApplyOne(item.scene_id, "apply", { overrideStem });
+        setApplyDone(true);
+      } catch (e) {
+        setApplyErr(e.message || "Apply failed");
+      } finally {
+        setApplying(false);
+      }
+    }
+
+    if (applyDone) {
+      return ce("div", { className: "ss-row ss-row-done" },
+        ce("div", { className: "ss-row-done-msg" },
+          ce(IconCheck), " Applied — ", ce("code", null, basename(item.original_path))
+        )
+      );
+    }
 
     return ce("div", { className: `ss-row ${selected ? "ss-row-selected" : ""}` },
       // Checkbox
@@ -162,6 +226,7 @@
           selected ? ce(IconCheck) : null
         )
       ),
+
       // Body
       ce("div", { className: "ss-row-body" },
         ce("div", { className: "ss-scene-title" },
@@ -169,22 +234,51 @@
           " ",
           item.scene_title
         ),
+
         item.filename_changes
-          ? ce(FilenameChange, { item })
+          ? ce(FilenameEditor, {
+              item,
+              overrideStem,
+              onChangeStem,
+            })
           : ce("div", { className: "ss-no-rename" }, "Filename unchanged — tags only"),
+
         // Tags + junk chips
-        (newTags.length > 0 || existingTags.length > 0 || junkTokens.length > 0) && ce("div", { className: "ss-tags-row" },
-          newTags.map(t      => ce(TagChip, { key: t.tag_id, name: t.tag_name, isNew: true })),
-          existingTags.map(t => ce(TagChip, { key: t.tag_id, name: t.tag_name, isNew: false })),
-          strippedJunk && junkTokens.map(t => ce(JunkChip, { key: t.raw, raw: t.raw }))
-        )
+        (newTags.length > 0 || existingTags.length > 0 || junkTokens.length > 0 || promotedTags.length > 0) &&
+          ce("div", { className: "ss-tags-row" },
+            newTags.map(t => ce(TagChip, { key: t.tag_id, name: t.tag_name, isNew: true })),
+            promotedTags.map(t => ce(TagChip, { key: t.tag_id, name: t.tag_name, isNew: true })),
+            existingTags.map(t => ce(TagChip, { key: t.tag_id, name: t.tag_name, isNew: false })),
+            strippedJunk && junkTokens.map(t =>
+              ce(JunkChip, {
+                key: t.raw,
+                raw: t.raw,
+                phrase: t.phrase,
+                onPromote: handlePromote,
+                promoting: promoting === t.raw,
+              })
+            )
+          ),
+
+        applyErr && ce("div", { className: "ss-row-err" }, applyErr)
       ),
-      // Accept / Reject quick buttons
+
+      // Per-row actions
       ce("div", { className: "ss-row-actions" },
+        // Apply this one button
+        ce("button", {
+          className: "ss-icon-btn ss-icon-btn-apply",
+          title: "Apply this scene only",
+          disabled: applying,
+          onClick: handleApplyThis,
+        },
+          applying ? ce(IconSpinner) : ce(IconPlay)
+        ),
+        // Select toggle
         ce("button", {
           className: `ss-icon-btn ${selected ? "ss-icon-btn-active" : ""}`,
           onClick: onToggle,
-          title: selected ? "Deselect" : "Select",
+          title: selected ? "Deselect" : "Select for bulk apply",
         }, selected ? ce(IconX) : ce(IconCheck))
       )
     );
@@ -193,19 +287,24 @@
   // ── Main Modal ────────────────────────────────────────────────────────────────
 
   function SanitizeModal({ onClose }) {
-    const [phase, setPhase]           = useState("idle");   // idle | scanning | review | applying | done | error
-    const [scanStatus, setScanStatus] = useState(null);
-    const [report, setReport]         = useState(null);
-    const [selected, setSelected]     = useState(new Set());
-    const [applyMsg, setApplyMsg]     = useState("");
-    const [errorMsg, setErrorMsg]     = useState("");
-    const [filter, setFilter]         = useState("all");    // all | filename | tagsonly
-    const [search, setSearch]         = useState("");
+    const [phase, setPhase]             = useState("idle");
+    const [scanStatus, setScanStatus]   = useState(null);
+    const [report, setReport]           = useState(null);
+    // Map of scene_id → override stem string (if user edited)
+    const [stemOverrides, setStemOverrides] = useState({});
+    // Map of scene_id → extra tag ids added via junk promotion
+    const [extraTags, setExtraTags]     = useState({});
+    const [selected, setSelected]       = useState(new Set());
+    const [applyMsg, setApplyMsg]       = useState("");
+    const [errorMsg, setErrorMsg]       = useState("");
+    const [filter, setFilter]           = useState("all");
+    const [search, setSearch]           = useState("");
+    // Set of scene_ids that have been individually applied
+    const [appliedIds, setAppliedIds]   = useState(new Set());
     const cancelRef = useRef(null);
 
     useEffect(() => {
       document.body.style.overflow = "hidden";
-      // Try to load an existing report on open
       fetchAssetJSON("sanitize_report.json").then(data => {
         if (data && data.status === "done" && data.pending && data.pending.length > 0) {
           setReport(data);
@@ -216,13 +315,19 @@
       return () => { document.body.style.overflow = ""; };
     }, []);
 
+    // ── Scan ──────────────────────────────────────────────────────────────────
+
     async function handleScan() {
       if (cancelRef.current) cancelRef.current();
       setPhase("scanning");
       setScanStatus({ status: "running", message: "Starting scan…", progress: 0 });
       setReport(null);
       setSelected(new Set());
+      setStemOverrides({});
+      setExtraTags({});
+      setAppliedIds(new Set());
       setErrorMsg("");
+      setApplyMsg("");
 
       try {
         await runPluginTask("Scan for Dirty Filenames", []);
@@ -236,7 +341,6 @@
         "sanitize_status.json",
         (data) => setScanStatus(data),
         async (_data) => {
-          // Load the full report
           const r = await fetchAssetJSON("sanitize_report.json");
           if (r) {
             setReport(r);
@@ -249,40 +353,132 @@
       );
     }
 
-    async function handleApply() {
-      if (!report || selected.size === 0) return;
-      setPhase("applying");
-      setApplyMsg("Queuing apply task…");
-      setErrorMsg("");
+    // ── Per-row callback: add_tag or apply ────────────────────────────────────
 
-      const ids = [...selected].join(",");
-      try {
-        await runPluginTask("Apply Sanitization", [
-          { key: "scene_ids", value: { str: ids } },
-        ]);
-      } catch (e) {
-        setPhase("error");
-        setErrorMsg("Failed to queue apply: " + e.message);
+    /**
+     * Called by SceneRow for two purposes:
+     *   mode="add_tag" → store an extra promoted tag for this scene
+     *   mode="apply"   → actually apply just this one scene
+     */
+    async function handleRowAction(sceneId, mode, payload) {
+      if (mode === "add_tag") {
+        setExtraTags(prev => ({
+          ...prev,
+          [sceneId]: [...(prev[sceneId] || []), payload.tag_id],
+        }));
         return;
       }
 
-      // Poll the report for the last_apply key as confirmation
-      let attempts = 0;
-      const iv = setInterval(async () => {
-        attempts++;
-        const r = await fetchAssetJSON("sanitize_report.json").catch(() => null);
-        if (r && r.last_apply) {
-          clearInterval(iv);
-          setReport(r);
-          setSelected(new Set(r.pending.map(p => p.scene_id)));
-          const { done, errors } = r.last_apply;
-          setApplyMsg(`Applied ${done} change${done !== 1 ? "s" : ""}${errors ? `, ${errors} errors` : ""}. Run a library scan to update Stash.`);
-          setPhase("done");
-        }
-        if (attempts > 600) { clearInterval(iv); setPhase("error"); setErrorMsg("Timed out."); }
-      }, 500);
-      cancelRef.current = () => clearInterval(iv);
+      if (mode === "apply") {
+        // Build the effective item
+        const item = (report.pending || []).find(p => p.scene_id === sceneId);
+        if (!item) return;
+
+        const overrideStem = payload.overrideStem;
+        const ext          = basename(item.original_path).includes(".")
+          ? basename(item.original_path).slice(basename(item.original_path).lastIndexOf("."))
+          : "";
+        const effectiveStem = (overrideStem !== undefined && overrideStem !== item.new_stem)
+          ? overrideStem
+          : item.new_stem;
+        const newBasename  = effectiveStem + ext;
+        const newPath      = dirname(item.original_path) + "/" + newBasename;
+
+        // Merge any promoted tag ids
+        const promoted = extraTags[sceneId] || [];
+        const allTagIds = [...new Set([...item.all_tag_ids, ...promoted])];
+
+        // Fire apply for this single scene via plugin task, passing custom path too
+        // We send it as a single scene_ids and override via a custom arg
+        // Actually: we build a mini-apply payload and do it ourselves via GraphQL
+        // because the python task has no way to receive a per-scene new_path override.
+        // So we'll call the mutations directly from JS.
+        await applySingleScene(item, newPath, allTagIds);
+        setAppliedIds(prev => new Set([...prev, sceneId]));
+        // Remove from pending in local state
+        setReport(prev => ({
+          ...prev,
+          pending: (prev.pending || []).filter(p => p.scene_id !== sceneId),
+        }));
+        setSelected(prev => { const n = new Set(prev); n.delete(sceneId); return n; });
+      }
     }
+
+    /**
+     * Apply a single scene directly via GraphQL mutations (no Python needed).
+     * This lets us pass arbitrary new_path without modifying the Python plugin.
+     */
+    async function applySingleScene(item, newPath, allTagIds) {
+      // 1. Rename file if needed
+      if (item.filename_changes && item.original_path !== newPath) {
+        await gqlQuery(`
+          mutation MoveFiles($input: MoveFilesInput!) {
+            moveFiles(input: $input)
+          }
+        `, { input: { ids: [item.file_id], destination: newPath } });
+      }
+
+      // 2. Build new title
+      let newTitle = item.scene_title || "";
+      const tokensToStrip = [...(item.matched_tokens || [])];
+      if (item.stripped_unmatched) tokensToStrip.push(...(item.unmatched_tokens || []));
+      for (const tok of tokensToStrip) {
+        newTitle = newTitle.replace(new RegExp(escapeRegex(tok.raw), "gi"), "");
+      }
+      newTitle = newTitle.replace(/\s+/g, " ").trim() || basename(newPath).replace(/\.[^.]+$/, "");
+
+      // 3. Update scene
+      await gqlQuery(`
+        mutation SceneUpdate($input: SceneUpdateInput!) {
+          sceneUpdate(input: $input) { id }
+        }
+      `, { input: { id: item.scene_id, title: newTitle, tag_ids: allTagIds } });
+    }
+
+    function escapeRegex(str) {
+      return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    }
+
+    // ── Bulk apply ────────────────────────────────────────────────────────────
+
+    async function handleApply() {
+      if (!report || selected.size === 0) return;
+      setPhase("applying");
+      setApplyMsg("Applying changes…");
+      setErrorMsg("");
+
+      const toApply = (report.pending || []).filter(p => selected.has(p.scene_id));
+      let done = 0, errors = 0;
+
+      for (const item of toApply) {
+        try {
+          const overrideStem = stemOverrides[item.scene_id];
+          const ext = basename(item.original_path).includes(".")
+            ? basename(item.original_path).slice(basename(item.original_path).lastIndexOf("."))
+            : "";
+          const effectiveStem = (overrideStem !== undefined) ? overrideStem : item.new_stem;
+          const newPath = dirname(item.original_path) + "/" + effectiveStem + ext;
+          const promoted = extraTags[item.scene_id] || [];
+          const allTagIds = [...new Set([...item.all_tag_ids, ...promoted])];
+          await applySingleScene(item, newPath, allTagIds);
+          done++;
+        } catch (e) {
+          WARN("Apply error for scene", item.scene_id, e);
+          errors++;
+        }
+      }
+
+      // Remove applied from local pending
+      setReport(prev => ({
+        ...prev,
+        pending: (prev.pending || []).filter(p => !selected.has(p.scene_id)),
+      }));
+      setSelected(new Set());
+      setApplyMsg(`Applied ${done} change${done !== 1 ? "s" : ""}${errors ? `, ${errors} errors` : ""}. Run a library scan to update Stash.`);
+      setPhase("done");
+    }
+
+    // ── Selection helpers ─────────────────────────────────────────────────────
 
     function toggleAll(val) {
       if (!report) return;
@@ -297,35 +493,38 @@
       });
     }
 
+    // ── Derived data ──────────────────────────────────────────────────────────
+
     const pending  = (report && report.pending) || [];
     const filtered = pending.filter(p => {
       if (filter === "filename" && !p.filename_changes) return false;
       if (filter === "tagsonly" &&  p.filename_changes) return false;
       if (search) {
         const q = search.toLowerCase();
-        const haystack = (p.scene_title + p.original_path).toLowerCase();
-        if (!haystack.includes(q)) return false;
+        if (!(p.scene_title + p.original_path).toLowerCase().includes(q)) return false;
       }
       return true;
     });
 
     const allFilteredSelected = filtered.length > 0 && filtered.every(p => selected.has(p.scene_id));
 
+    // ── Render ────────────────────────────────────────────────────────────────
+
     return ce("div", { className: "ss-overlay", onClick: e => { if (e.target === e.currentTarget) onClose(); } },
       ce("div", { className: "ss-modal" },
 
-        // ── Header ──
+        // Header
         ce("div", { className: "ss-modal-header" },
           ce("div", { className: "ss-header-left" },
             ce("h2", null, "Filename Sanitizer"),
             ce("p", { className: "ss-subtitle" },
-              "Detect tag-like tokens in filenames, strip them, and add matching Stash tags."
+              "Detect tag-like tokens in filenames, strip them, rename files, and add Stash tags."
             )
           ),
           ce("button", { className: "ss-close-btn", onClick: onClose }, ce(IconX))
         ),
 
-        // ── Scan bar ──
+        // Scan bar
         ce("div", { className: "ss-scan-bar" },
           ce("button", {
             className: "ss-btn ss-btn-primary",
@@ -350,13 +549,13 @@
           )
         ),
 
-        // ── Error ──
+        // Error bar
         errorMsg && ce("div", { className: "ss-error-bar" }, errorMsg),
 
-        // ── Done message ──
+        // Success bar
         phase === "done" && applyMsg && ce("div", { className: "ss-success-bar" }, applyMsg),
 
-        // ── Review table ──
+        // Review table
         (phase === "review" || phase === "applying" || phase === "done") && pending.length > 0 && ce("div", { className: "ss-review-section" },
 
           // Toolbar
@@ -398,6 +597,9 @@
                     item,
                     selected: selected.has(item.scene_id),
                     onToggle: () => toggleOne(item.scene_id),
+                    onApplyOne: handleRowAction,
+                    overrideStem: stemOverrides[item.scene_id],
+                    onChangeStem: val => setStemOverrides(prev => ({ ...prev, [item.scene_id]: val })),
                   })
                 )
           )
@@ -407,30 +609,32 @@
           "✓ No scenes need sanitization."
         ),
 
-        // ── Actions ──
-        (phase === "review" || phase === "applying" || phase === "done") && pending.length > 0 && ce("div", { className: "ss-action-bar" },
-          phase === "applying"
-            ? ce("div", { className: "ss-applying-msg" },
-                ce("div", { className: "ss-spinner" }),
-                applyMsg || "Applying changes…"
-              )
-            : ce("button", {
-                className: "ss-btn ss-btn-primary",
-                onClick: handleApply,
-                disabled: selected.size === 0 || phase !== "review",
-              }, `Apply ${selected.size} Change${selected.size !== 1 ? "s" : ""}`)
-          ,
-          ce("button", {
-            className: "ss-btn ss-btn-secondary",
-            onClick: () => toggleAll(false),
-            disabled: selected.size === 0,
-          }, "Deselect All"),
-          ce("button", {
-            className: "ss-btn ss-btn-secondary",
-            onClick: () => toggleAll(true),
-            disabled: filtered.every(p => selected.has(p.scene_id)),
-          }, "Select All")
-        )
+        // Action bar
+        (phase === "review" || phase === "applying" || phase === "done") && pending.length > 0 &&
+          ce("div", { className: "ss-action-bar" },
+            phase === "applying"
+              ? ce("div", { className: "ss-applying-msg" },
+                  ce(IconSpinner),
+                  applyMsg || "Applying changes…"
+                )
+              : ce("button", {
+                  className: "ss-btn ss-btn-primary",
+                  onClick: handleApply,
+                  disabled: selected.size === 0 || phase !== "review",
+                }, `Apply ${selected.size} Selected`),
+
+            ce("button", {
+              className: "ss-btn ss-btn-secondary",
+              onClick: () => toggleAll(false),
+              disabled: selected.size === 0,
+            }, "Deselect All"),
+
+            ce("button", {
+              className: "ss-btn ss-btn-secondary",
+              onClick: () => toggleAll(true),
+              disabled: filtered.every(p => selected.has(p.scene_id)),
+            }, "Select All")
+          )
       )
     );
   }
