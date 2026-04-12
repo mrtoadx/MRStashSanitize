@@ -410,12 +410,16 @@
      */
     async function applySingleScene(item, newPath, allTagIds) {
       // 1. Rename file if needed
+      // MoveFilesInput uses destination_folder (directory) + destination_basename (filename),
+      // NOT a single "destination" full-path field.
       if (item.filename_changes && item.original_path !== newPath) {
+        const destFolder   = dirname(newPath);
+        const destBasename = basename(newPath);
         await gqlQuery(`
           mutation MoveFiles($input: MoveFilesInput!) {
             moveFiles(input: $input)
           }
-        `, { input: { ids: [item.file_id], destination: newPath } });
+        `, { input: { ids: [item.file_id], destination_folder: destFolder, destination_basename: destBasename } });
       }
 
       // 2. Build new title

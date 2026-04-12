@@ -74,11 +74,13 @@ def update_scene(url, apikey, scene_id, new_title, tag_ids):
 
 def move_file(url, apikey, file_id, new_path):
     """Use Stash's moveFiles mutation to rename/move a file."""
+    dest_folder   = os.path.dirname(new_path)
+    dest_basename = os.path.basename(new_path)
     res = graphql_query(url, apikey, """
     mutation MoveFiles($input: MoveFilesInput!) {
       moveFiles(input: $input)
     }
-    """, {"input": {"ids": [file_id], "destination": new_path}})
+    """, {"input": {"ids": [file_id], "destination_folder": dest_folder, "destination_basename": dest_basename}})
     return res.get("data", {}).get("moveFiles", False)
 
 
