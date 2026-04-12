@@ -6,11 +6,21 @@ import os
 import re
 import shutil
 import time
+import logging
 
 PLUGIN_DIR = os.path.dirname(os.path.abspath(sys.argv[0]))
 ASSETS_DIR = os.path.join(PLUGIN_DIR, "assets")
 SESSION_COOKIE = None
 
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="[MRStashSanitize] %(asctime)s %(levelname)s %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger("MRStashSanitize")
 
 # ── GraphQL ────────────────────────────────────────────────────────────────────
 
@@ -77,6 +87,8 @@ def move_file(url, apikey, file_id, new_path):
     """Use Stash's moveFiles mutation to rename/move a file."""
     dest_folder   = os.path.dirname(new_path)
     dest_basename = os.path.basename(new_path)
+
+    log.warning("move_file asset dest_folder=%s dest_basename=%s new_path=%s", dest_folder, dest_basename, new_path)
     res = graphql_query(url, apikey, """
     mutation MoveFiles($input: MoveFilesInput!) {
       moveFiles(input: $input)
