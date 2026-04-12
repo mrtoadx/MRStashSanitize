@@ -34,9 +34,6 @@
     );
   }
 
-  /**
-   * Create a new tag in Stash and return its id.
-   */
   async function createTag(name) {
     const data = await gqlQuery(`
       mutation TagCreate($input: TagCreateInput!) {
@@ -82,11 +79,6 @@
   function basename(p) { return p.split(/[\\/]/).pop(); }
   function dirname(p)  { const parts = p.split(/[\\/]/); parts.pop(); return parts.join("/"); }
 
-  /**
-   * Convert a studio name to a CamelCase directory name.
-   * "Some Studio Name" → "SomeStudioName"
-   * Already-camel or single-word names are returned unchanged (first char uppercased).
-   */
   function studioToFolderName(studioName) {
     if (!studioName) return "";
     return studioName
@@ -96,26 +88,36 @@
       .join("");
   }
 
-  /**
-   * Given a scene's current path and a studio folder name, compute the new path.
-   * Replaces only the immediate parent directory of the file.
-   * e.g. /media/videos/RandomFolder/scene.mp4 → /media/videos/SomeStudio/scene.mp4
-   */
   function applyStudioFolder(currentPath, studioFolder) {
     const grandparent = dirname(dirname(currentPath));
     const file = basename(currentPath);
     return grandparent + "/" + studioFolder + "/" + file;
   }
 
-  /**
-   * Sanitize a title string into a safe filename stem.
-   * Strips characters that are illegal on most filesystems.
-   */
   function titleToStem(title) {
     return title
-      .replace(/[/\\:*?"<>|]/g, "")   // illegal filename chars
+      .replace(/[/\\:*?"<>|]/g, "")
       .replace(/\s+/g, " ")
       .trim();
+  }
+
+  // ── dir_class helpers ─────────────────────────────────────────────────────────
+
+  const DIR_CLASS_LABELS = {
+    ok:           null,
+    wrong_studio: { label: "Wrong Studio Folder", color: "#9575cd" },
+    self_titled:  { label: "Self-Titled Folder",  color: "#ff8a65" },
+    shallow:      { label: "Shallow / Root Dir",  color: "#ff7043" },
+  };
+
+  function DirClassBadge({ dirClass }) {
+    const info = DIR_CLASS_LABELS[dirClass];
+    if (!info) return null;
+    return ce("span", {
+      className: "ss-dir-class-badge",
+      style: { borderColor: info.color + "55", color: info.color, background: info.color + "12" },
+      title: `Directory issue: ${info.label}`,
+    }, info.label);
   }
 
   // ── Icons ─────────────────────────────────────────────────────────────────────
@@ -129,21 +131,31 @@
   const IconPlus  = () => ce("svg",{xmlns:"http://www.w3.org/2000/svg",viewBox:"0 0 24 24",width:11,height:11,fill:"none",stroke:"currentColor",strokeWidth:2.5,strokeLinecap:"round",strokeLinejoin:"round"},ce("line",{x1:12,y1:5,x2:12,y2:19}),ce("line",{x1:5,y1:12,x2:19,y2:12}));
   const IconSpinner = () => ce("div", { className: "ss-spinner" });
 
-  // Title-as-filename icon (document with arrow)
   const IconTitleFile = () => ce("svg",{xmlns:"http://www.w3.org/2000/svg",viewBox:"0 0 24 24",width:12,height:12,fill:"none",stroke:"currentColor",strokeWidth:2,strokeLinecap:"round",strokeLinejoin:"round"},
     ce("path",{d:"M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"}),
     ce("polyline",{points:"14 2 14 8 20 8"}),
     ce("line",{x1:9,y1:15,x2:15,y2:15})
   );
 
-  // Studio/folder icon
   const IconFolder = () => ce("svg",{xmlns:"http://www.w3.org/2000/svg",viewBox:"0 0 24 24",width:12,height:12,fill:"none",stroke:"currentColor",strokeWidth:2,strokeLinecap:"round",strokeLinejoin:"round"},
     ce("path",{d:"M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"})
   );
 
+  const IconWarning = () => ce("svg",{xmlns:"http://www.w3.org/2000/svg",viewBox:"0 0 24 24",width:12,height:12,fill:"none",stroke:"currentColor",strokeWidth:2,strokeLinecap:"round",strokeLinejoin:"round"},
+    ce("path",{d:"M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"}),
+    ce("line",{x1:12,y1:9,x2:12,y2:13}),
+    ce("line",{x1:12,y1:17,x2:"12.01",y2:17})
+  );
+
   // ── Tag chip ──────────────────────────────────────────────────────────────────
 
-  function TagChip({ name, isNew }) {
+  function TagChip({ name, isNew, isMissingStudio }) {
+    if (isMissingStudio) {
+      return ce("span", {
+        className: "ss-tag-chip ss-tag-missing-studio",
+        title: "This scene has no studio assigned — MissingStudio tag will be added so you can find and fix it later",
+      }, ce(IconWarning), " MissingStudio");
+    }
     return ce("span", {
       className: `ss-tag-chip ${isNew ? "ss-tag-new" : "ss-tag-existing"}`,
       title: isNew ? "Will be added" : "Already on scene",
@@ -152,7 +164,7 @@
     );
   }
 
-  // ── Junk chip — with "promote to tag" button ──────────────────────────────────
+  // ── Junk chip ─────────────────────────────────────────────────────────────────
 
   function JunkChip({ raw, phrase, onPromote, promoting }) {
     return ce("span", {
@@ -187,25 +199,18 @@
   function FilenameEditor({ item, overrideStem, onChangeStem }) {
     const origBase = basename(item.original_path);
     const ext      = origBase.includes(".") ? origBase.slice(origBase.lastIndexOf(".")) : "";
-
     const displayStem = overrideStem !== undefined ? overrideStem : item.new_stem;
 
-    // "Use title as filename" — derive stem from scene title
     function handleUseTitle() {
       const stem = titleToStem(item.scene_title || "");
       if (stem) onChangeStem(stem);
     }
 
-    // "Use studio folder" — update overrideStem to include studio dir in path display
-    // (studio folder is shown separately; this button is on the path row)
-
     return ce("div", { className: "ss-filename-change" },
-      // FROM row (static)
       ce("div", { className: "ss-filename-row" },
         ce("span", { className: "ss-fname-label" }, "FROM"),
         ce("code", { className: "ss-fname ss-fname-old" }, origBase)
       ),
-      // TO row (editable)
       ce("div", { className: "ss-filename-row" },
         ce("span", { className: "ss-fname-label" }, "TO"),
         ce("div", { className: "ss-fname-edit-wrap" },
@@ -218,7 +223,6 @@
           }),
           ce("code", { className: "ss-fname-ext" }, ext)
         ),
-        // Use title button
         item.scene_title && ce("button", {
           className: "ss-title-file-btn",
           title: `Use scene title as filename: "${item.scene_title}"`,
@@ -232,14 +236,7 @@
 
   // ── Studio folder badge ───────────────────────────────────────────────────────
 
-  /**
-   * Shows the proposed studio folder move and a toggle to enable/disable it.
-   * studioFolder: the CamelCase folder name string (e.g. "SomeStudioName")
-   * enabled: bool
-   * onToggle: () => void
-   * currentPath: original file path (to show where it would move)
-   */
-  function StudioFolderBadge({ studioFolder, enabled, onToggle, currentPath }) {
+  function StudioFolderBadge({ studioFolder, enabled, onToggle, currentPath, dirClass }) {
     const currentParent = basename(dirname(currentPath));
     const alreadyThere  = currentParent === studioFolder;
 
@@ -248,6 +245,11 @@
         ce(IconFolder), " Already in studio folder: ", ce("code", null, studioFolder)
       );
     }
+
+    // Pick a contextual reason label
+    let reasonLabel = "Move to studio folder";
+    if (dirClass === "self_titled") reasonLabel = "Self-titled folder → move to studio";
+    else if (dirClass === "shallow") reasonLabel = "Shallow root dir → move to studio";
 
     return ce("div", { className: `ss-studio-badge ${enabled ? "ss-studio-badge-on" : "ss-studio-badge-off"}` },
       ce("button", {
@@ -258,7 +260,7 @@
         enabled ? ce(IconCheck) : ce(IconFolder)
       ),
       ce("span", null,
-        ce(IconFolder), " Move to studio folder: ",
+        ce(IconFolder), ` ${reasonLabel}: `,
         ce("code", null, studioFolder),
         ce("span", { className: "ss-studio-from" },
           ` (currently in: ${currentParent})`
@@ -267,20 +269,38 @@
     );
   }
 
+  // ── No-studio dir badge (shown when dir is bad but no studio is assigned) ─────
+
+  function NoStudioDirBadge({ dirClass, currentPath }) {
+    const currentParent = basename(dirname(currentPath));
+    const msgs = {
+      self_titled: `This file is in a self-titled folder (${currentParent}/) — assign a studio to enable automatic relocation.`,
+      shallow:     `This file is in a shallow/root directory — assign a studio to enable automatic relocation.`,
+    };
+    const msg = msgs[dirClass];
+    if (!msg) return null;
+    return ce("div", { className: "ss-no-studio-dir-badge" },
+      ce(IconWarning), " ", msg
+    );
+  }
+
   // ── Single scene row ──────────────────────────────────────────────────────────
 
   function SceneRow({ item, selected, onToggle, onApplyOne, overrideStem, onChangeStem, studioEnabled, onToggleStudio }) {
-    const [applying, setApplying]       = useState(false);
-    const [applyDone, setApplyDone]     = useState(false);
-    const [applyErr, setApplyErr]       = useState("");
-    const [junkTokens, setJunkTokens]   = useState(item.unmatched_tokens || []);
+    const [applying, setApplying]         = useState(false);
+    const [applyDone, setApplyDone]       = useState(false);
+    const [applyErr, setApplyErr]         = useState("");
+    const [junkTokens, setJunkTokens]     = useState(item.unmatched_tokens || []);
     const [promotedTags, setPromotedTags] = useState([]);
-    const [promoting, setPromoting]     = useState(null);
+    const [promoting, setPromoting]       = useState(null);
 
     const newTags      = item.tags_to_add || [];
     const existingTags = item.tags_already_on_scene || [];
     const strippedJunk = item.stripped_unmatched;
     const studioFolder = item.studio_folder || null;
+    const dirClass     = item.dir_class || "ok";
+    const needsDirFix  = item.needs_dir_fix;
+    const needsMissingStudio = item.needs_missing_studio;
 
     async function handlePromote(raw, phrase) {
       setPromoting(raw);
@@ -317,7 +337,12 @@
       );
     }
 
-    return ce("div", { className: `ss-row ${selected ? "ss-row-selected" : ""}` },
+    // Determine row accent class
+    let rowAccent = "";
+    if (needsMissingStudio) rowAccent = "ss-row-missing-studio";
+    else if (needsDirFix && !studioFolder) rowAccent = "ss-row-dir-warn";
+
+    return ce("div", { className: `ss-row ${selected ? "ss-row-selected" : ""} ${rowAccent}` },
       // Checkbox
       ce("div", { className: "ss-row-check", onClick: onToggle },
         ce("div", { className: `ss-checkbox ${selected ? "ss-checkbox-on" : ""}` },
@@ -327,31 +352,35 @@
 
       // Body
       ce("div", { className: "ss-row-body" },
+        // Title + dir-class badge
         ce("div", { className: "ss-scene-title" },
           ce("span", { className: "ss-scene-id" }, `#${item.scene_id}`),
           " ",
-          item.scene_title
+          item.scene_title,
+          " ",
+          dirClass !== "ok" && ce(DirClassBadge, { dirClass })
         ),
 
         item.filename_changes
-          ? ce(FilenameEditor, {
-              item,
-              overrideStem,
-              onChangeStem,
+          ? ce(FilenameEditor, { item, overrideStem, onChangeStem })
+          : ce("div", { className: "ss-no-rename" }, "Filename unchanged — directory/tag changes only"),
+
+        // Studio folder move row
+        studioFolder
+          ? ce(StudioFolderBadge, {
+              studioFolder,
+              enabled: studioEnabled,
+              onToggle: onToggleStudio,
+              currentPath: item.original_path,
+              dirClass,
             })
-          : ce("div", { className: "ss-no-rename" }, "Filename unchanged — tags only"),
+          : needsDirFix && ce(NoStudioDirBadge, { dirClass, currentPath: item.original_path }),
 
-        // Studio folder row
-        studioFolder && ce(StudioFolderBadge, {
-          studioFolder,
-          enabled: studioEnabled,
-          onToggle: onToggleStudio,
-          currentPath: item.original_path,
-        }),
-
-        // Tags + junk chips
-        (newTags.length > 0 || existingTags.length > 0 || junkTokens.length > 0 || promotedTags.length > 0) &&
+        // Tags
+        (newTags.length > 0 || existingTags.length > 0 || junkTokens.length > 0
+          || promotedTags.length > 0 || needsMissingStudio) &&
           ce("div", { className: "ss-tags-row" },
+            needsMissingStudio && ce(TagChip, { isMissingStudio: true }),
             newTags.map(t => ce(TagChip, { key: t.tag_id, name: t.tag_name, isNew: true })),
             promotedTags.map(t => ce(TagChip, { key: t.tag_id, name: t.tag_name, isNew: true })),
             existingTags.map(t => ce(TagChip, { key: t.tag_id, name: t.tag_name, isNew: false })),
@@ -391,19 +420,18 @@
   // ── Main Modal ────────────────────────────────────────────────────────────────
 
   function SanitizeModal({ onClose }) {
-    const [phase, setPhase]             = useState("idle");
-    const [scanStatus, setScanStatus]   = useState(null);
-    const [report, setReport]           = useState(null);
+    const [phase, setPhase]               = useState("idle");
+    const [scanStatus, setScanStatus]     = useState(null);
+    const [report, setReport]             = useState(null);
     const [stemOverrides, setStemOverrides] = useState({});
-    const [extraTags, setExtraTags]     = useState({});
-    const [selected, setSelected]       = useState(new Set());
-    // Map of scene_id → bool: whether studio folder move is enabled for that scene
+    const [extraTags, setExtraTags]       = useState({});
+    const [selected, setSelected]         = useState(new Set());
     const [studioEnabled, setStudioEnabled] = useState({});
-    const [applyMsg, setApplyMsg]       = useState("");
-    const [errorMsg, setErrorMsg]       = useState("");
-    const [filter, setFilter]           = useState("all");
-    const [search, setSearch]           = useState("");
-    const [appliedIds, setAppliedIds]   = useState(new Set());
+    const [applyMsg, setApplyMsg]         = useState("");
+    const [errorMsg, setErrorMsg]         = useState("");
+    const [filter, setFilter]             = useState("all");
+    const [search, setSearch]             = useState("");
+    const [appliedIds, setAppliedIds]     = useState(new Set());
     const cancelRef = useRef(null);
 
     useEffect(() => {
@@ -413,7 +441,7 @@
           setReport(data);
           setSelected(new Set(data.pending.map(p => p.scene_id)));
           initStudioEnabled(data.pending);
-          setPhase("review"); // ← add this
+          setPhase("review");
         }
       }).catch(() => {});
       return () => { document.body.style.overflow = ""; };
@@ -424,7 +452,6 @@
       for (const p of pending) {
         if (p.studio_folder) {
           const currentParent = basename(dirname(p.original_path));
-          // Default ON only if not already in the right folder
           map[p.scene_id] = currentParent !== p.studio_folder;
         }
       }
@@ -495,7 +522,8 @@
 
         // Determine destination folder
         let destDir = dirname(item.original_path);
-        if (payload.studioEnabled && item.studio_folder) {
+        const dirClass = item.dir_class || "ok";
+        if (payload.studioEnabled && item.studio_folder && dirClass !== "ok") {
           destDir = dirname(dirname(item.original_path)) + "/" + item.studio_folder;
         }
 
@@ -514,7 +542,7 @@
     }
 
     async function applySingleScene(item, newPath, allTagIds) {
-      if (item.filename_changes && item.original_path !== newPath) {
+      if (item.original_path !== newPath) {
         const destFolder   = dirname(newPath);
         const destBasename = basename(newPath);
         await gqlQuery(`
@@ -561,9 +589,9 @@
           const overrideStem = stemOverrides[item.scene_id];
           const effectiveStem = (overrideStem !== undefined) ? overrideStem : item.new_stem;
 
-          // Determine destination folder
+          const dirClass = item.dir_class || "ok";
           let destDir = dirname(item.original_path);
-          if (studioEnabled[item.scene_id] && item.studio_folder) {
+          if (studioEnabled[item.scene_id] && item.studio_folder && dirClass !== "ok") {
             destDir = dirname(dirname(item.original_path)) + "/" + item.studio_folder;
           }
 
@@ -609,10 +637,18 @@
     // ── Derived data ──────────────────────────────────────────────────────────
 
     const pending  = (report && report.pending) || [];
+
+    // Compute summary counts for filter tabs
+    const studioCount       = pending.filter(p => p.studio_folder && p.dir_class !== "ok").length;
+    const dirIssueCount     = pending.filter(p => p.needs_dir_fix).length;
+    const missingStudioCount = pending.filter(p => p.needs_missing_studio).length;
+
     const filtered = pending.filter(p => {
-      if (filter === "filename" && !p.filename_changes) return false;
-      if (filter === "tagsonly" &&  p.filename_changes) return false;
-      if (filter === "studio"  && !p.studio_folder)    return false;
+      if (filter === "filename"  && !p.filename_changes)  return false;
+      if (filter === "tagsonly"  &&  p.filename_changes)  return false;
+      if (filter === "studio"    && (!p.studio_folder || p.dir_class === "ok")) return false;
+      if (filter === "dirissue"  && !p.needs_dir_fix)     return false;
+      if (filter === "nostudio"  && !p.needs_missing_studio) return false;
       if (search) {
         const q = search.toLowerCase();
         if (!(p.scene_title + p.original_path).toLowerCase().includes(q)) return false;
@@ -621,7 +657,22 @@
     });
 
     const allFilteredSelected = filtered.length > 0 && filtered.every(p => selected.has(p.scene_id));
-    const studioCount = pending.filter(p => p.studio_folder).length;
+
+    // ── Filter tab definitions ────────────────────────────────────────────────
+    const filterTabs = [
+      { key: "all",       label: "All" },
+      { key: "filename",  label: "Rename" },
+      { key: "tagsonly",  label: "Tags Only" },
+      { key: "studio",    label: `Studio Move (${studioCount})` },
+      { key: "dirissue",  label: `Dir Issues (${dirIssueCount})` },
+      { key: "nostudio",  label: `No Studio (${missingStudioCount})` },
+    ].filter(t => {
+      // Hide zero-count contextual tabs to keep UI tidy
+      if (t.key === "studio"   && studioCount === 0)        return false;
+      if (t.key === "dirissue" && dirIssueCount === 0)      return false;
+      if (t.key === "nostudio" && missingStudioCount === 0) return false;
+      return true;
+    });
 
     // ── Render ────────────────────────────────────────────────────────────────
 
@@ -633,7 +684,7 @@
           ce("div", { className: "ss-header-left" },
             ce("h2", null, "Filename Sanitizer"),
             ce("p", { className: "ss-subtitle" },
-              "Detect tag-like tokens in filenames, strip them, rename files, and add Stash tags."
+              "Detect tag-like tokens, fix filenames, move scenes to studio folders, and tag scenes missing studio assignments."
             )
           ),
           ce("button", { className: "ss-close-btn", onClick: onClose }, ce(IconX))
@@ -662,15 +713,18 @@
               ` of ${report.total_scanned} scanned`
             ),
             studioCount > 0 && ce("span", { className: "ss-stat-studio" },
-              ce(IconFolder), ` ${studioCount} with studio folder`
+              ce(IconFolder), ` ${studioCount} studio moves`
+            ),
+            dirIssueCount > 0 && ce("span", { className: "ss-stat-dirissue" },
+              ce(IconWarning), ` ${dirIssueCount} dir issues`
+            ),
+            missingStudioCount > 0 && ce("span", { className: "ss-stat-nostudio" },
+              ce(IconWarning), ` ${missingStudioCount} missing studio`
             )
           )
         ),
 
-        // Error bar
         errorMsg && ce("div", { className: "ss-error-bar" }, errorMsg),
-
-        // Success bar
         phase === "done" && applyMsg && ce("div", { className: "ss-success-bar" }, applyMsg),
 
         // Review table
@@ -687,12 +741,7 @@
             ),
 
             ce("div", { className: "ss-filter-group" },
-              [
-                { key: "all",      label: "All" },
-                { key: "filename", label: "Rename" },
-                { key: "tagsonly", label: "Tags Only" },
-                { key: "studio",   label: `Studio (${studioCount})` },
-              ].map(f =>
+              filterTabs.map(f =>
                 ce("button", {
                   key: f.key,
                   className: `ss-filter-btn ${filter === f.key ? "ss-filter-active" : ""}`,

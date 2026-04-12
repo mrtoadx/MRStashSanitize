@@ -12,6 +12,8 @@ PLUGIN_DIR = os.path.dirname(os.path.abspath(sys.argv[0]))
 ASSETS_DIR = os.path.join(PLUGIN_DIR, "assets")
 SESSION_COOKIE = None
 
+MISSING_STUDIO_TAG_NAME = "MissingStudio"
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -53,6 +55,36 @@ def get_all_tags(url, apikey):
             if alias.lower() not in lookup:
                 lookup[alias.lower()] = {"id": t["id"], "name": t["name"]}
     return lookup
+
+
+def ensure_tag_exists(url, apikey, tag_name):
+    """
+    Look up a tag by name. If it doesn't exist, create it.
+    Returns {"id": ..., "name": ...}.
+    """
+    res = graphql_query(url, apikey, """
+    query FindTag($name: String!) {
+      allTags { id name }
+    }
+    """)
+    # allTags is cheaper than a per-name query — filter client-side
+    all_tags = res.get("data", {}).get("allTags", [])
+    for t in all_tags:
+        if t["name"].lower() == tag_name.lower():
+            log.info("Tag '%s' already exists (id=%s)", tag_name, t["id"])
+            return {"id": t["id"], "name": t["name"]}
+
+    log.info("Creating tag '%s'…", tag_name)
+    create_res = graphql_query(url, apikey, """
+    mutation TagCreate($input: TagCreateInput!) {
+      tagCreate(input: $input) { id name }
+    }
+    """, {"input": {"name": tag_name}})
+    tag = create_res.get("data", {}).get("tagCreate")
+    if tag:
+        log.info("Created tag '%s' (id=%s)", tag["name"], tag["id"])
+        return tag
+    raise RuntimeError(f"Failed to create tag '{tag_name}'")
 
 
 def get_scenes_paginated(url, apikey, page=1, per_page=100):
@@ -103,7 +135,6 @@ def studio_to_folder_name(studio_name):
     """
     Convert a studio name to a CamelCase directory name with no spaces.
     "Some Studio Name" → "SomeStudioName"
-    Already-camel or single-word names get their first char uppercased.
     """
     if not studio_name:
         return ""
@@ -111,18 +142,88 @@ def studio_to_folder_name(studio_name):
     return "".join(p[:1].upper() + p[1:] for p in parts if p)
 
 
+# ── Poor-directory detection ───────────────────────────────────────────────────
+
+def _normalise_for_compare(s):
+    """Lowercase, strip non-alphanumeric, collapse spaces — used for fuzzy dir/stem matching."""
+    return re.sub(r'[^a-z0-9]', '', s.lower())
+
+
+def is_self_titled_dir(dir_name, file_stem):
+    """
+    Return True when the parent directory looks like it was named after this
+    specific file (a one-file "self-titled" folder).
+
+    Heuristics
+    ----------
+    • Normalised dir == normalised stem  (exact after stripping punctuation/case)
+    • Normalised dir is a prefix of normalised stem ≥ 80 % of stem length
+      (handles truncated folder names like "SomeLongTitle" / "SomeLongTitle_Part1")
+    • Normalised stem starts with normalised dir and the remainder is ≤ 12 chars
+      (e.g. dir="SceneName", stem="SceneName_4K_1080p")
+    """
+    nd = _normalise_for_compare(dir_name)
+    ns = _normalise_for_compare(file_stem)
+    if not nd or not ns:
+        return False
+    if nd == ns:
+        return True
+    # dir is a long prefix of stem
+    if ns.startswith(nd) and len(nd) >= max(6, int(len(ns) * 0.75)):
+        return True
+    # stem starts with dir and only a short suffix remains
+    if ns.startswith(nd) and (len(ns) - len(nd)) <= 12:
+        return True
+    return False
+
+
+def classify_directory(path, studio_folder):
+    """
+    Classify why a scene's directory is "poor".
+
+    Returns one of:
+      "ok"          – already in the correct studio folder
+      "wrong_studio"– parent dir doesn't match expected studio folder
+      "self_titled" – parent dir appears named after this specific file
+      "shallow"     – file sits only 1 level below a filesystem root
+                      (e.g. /videos/scene.mp4 — depth < 2 usable components)
+
+    `studio_folder` may be None if the scene has no studio assigned.
+    """
+    parts = [p for p in path.replace("\\", "/").split("/") if p]
+    # parts[-1] is the filename; parts[-2] is the immediate parent dir
+    if len(parts) < 2:
+        return "shallow"
+
+    parent_dir  = parts[-2]
+    file_stem   = os.path.splitext(parts[-1])[0]
+
+    # Shallow: file is only one directory deep from root
+    if len(parts) == 2:
+        return "shallow"
+
+    if studio_folder:
+        if parent_dir == studio_folder:
+            return "ok"
+        # Self-titled takes priority over wrong_studio so the UI message is accurate
+        if is_self_titled_dir(parent_dir, file_stem):
+            return "self_titled"
+        return "wrong_studio"
+    else:
+        # No studio — still flag self-titled / shallow dirs
+        if is_self_titled_dir(parent_dir, file_stem):
+            return "self_titled"
+        return "ok"   # no studio, not self-titled → nothing we can do without more info
+
+
 # ── Token extraction ───────────────────────────────────────────────────────────
 
-# Sigil token patterns — a "sigil" is a leading _ or # that marks injected metadata.
-#
-# SIGIL_JOINED_RE: _Big_Ass or #Blow_Job  (Title_Case chain after sigil)
 SIGIL_JOINED_RE = re.compile(
     r'(?<![A-Za-z0-9])'
     r'[_#]+'
     r'([A-Z][a-z]+(?:_[A-Z][a-z]+)+)'
     r'(?![A-Za-z0-9])'
 )
-# SIGIL_WORD_RE: _BigAss  #BlowJob  _HD
 SIGIL_WORD_RE = re.compile(
     r'(?<![A-Za-z0-9])'
     r'[_#]+'
@@ -130,15 +231,10 @@ SIGIL_WORD_RE = re.compile(
     r'(?![A-Za-z0-9])'
 )
 SIGIL_NUM_RE = re.compile(r'[_#]+(\d+[A-Za-z]*)(?=[_\s#]|$)')
-
-# SIGIL_CHAIN_RE: matches any run of 2+ consecutive sigil-word tokens.
-# e.g. "#All#Together#Like#This" or "_Foo#Bar#Baz"
-# We split these in a pre-pass so each word is looked up individually.
 SIGIL_CHAIN_RE = re.compile(r'((?:[_#][A-Za-z][A-Za-z0-9]*){2,})')
 
 
 def token_to_phrase(raw_token):
-    """Convert a raw token to a normalised phrase for tag lookup."""
     s = re.sub(r'^[_#]+', '', raw_token)
     if s and s[0].isdigit():
         return s.lower()
@@ -150,21 +246,10 @@ def token_to_phrase(raw_token):
 
 
 def _split_sigil_chain(chain):
-    """Split a consecutive sigil run into individual #Word / _Word tokens.
-
-    "#All#Together#Like#This" -> ["#All", "#Together", "#Like", "#This"]
-    """
     return re.findall(r'[_#][A-Za-z][A-Za-z0-9]*', chain)
 
 
 def extract_candidate_tokens(filename_no_ext):
-    """Return (sigil_tokens, other_tokens).
-
-    Pre-pass: SIGIL_CHAIN_RE finds runs of consecutive sigil-words like
-    #All#Together#Like#This and splits them into individual tokens before
-    the main passes run. seen_raw dedup ensures the main passes don't
-    double-count anything already captured here.
-    """
     sigil_tokens = []
     other_tokens = []
     seen_raw     = set()
@@ -179,12 +264,10 @@ def extract_candidate_tokens(filename_no_ext):
             seen_phrases.add(phrase)
         sigil_tokens.append({"raw": raw, "phrase": phrase})
 
-    # Pre-pass: split chained runs like #All#Together#Like#This
     for m in SIGIL_CHAIN_RE.finditer(filename_no_ext):
         for tok in _split_sigil_chain(m.group(1)):
             _add_sigil(tok)
 
-    # Main passes — seen_raw dedup prevents double-counting chain tokens
     for m in SIGIL_JOINED_RE.finditer(filename_no_ext):
         _add_sigil(m.group(0))
 
@@ -229,24 +312,37 @@ def build_new_filename(original_stem, tokens_to_remove):
 
 def task_scan(url, apikey):
     """
-    Scan all scenes for filenames containing tag-like tokens.
-    Write results to assets/sanitize_report.json.
+    Scan all scenes for:
+      1. Filenames containing tag-like tokens (original behaviour).
+      2. Scenes in poor directories (self-titled, shallow, or wrong-studio folders).
+      3. Scenes with no studio assigned → add MissingStudio tag.
+
+    Writes results to assets/sanitize_report.json.
     """
     os.makedirs(ASSETS_DIR, exist_ok=True)
     _write_status({"status": "running", "message": "Loading config…", "progress": 0})
 
+    # ── Ensure MissingStudio tag exists ───────────────────────────────────────
+    _write_status({"status": "running", "message": "Ensuring system tags exist…", "progress": 1})
+    missing_studio_tag = ensure_tag_exists(url, apikey, MISSING_STUDIO_TAG_NAME)
+    missing_studio_tag_id = missing_studio_tag["id"]
+    log.info("MissingStudio tag id=%s", missing_studio_tag_id)
+
+    # ── Config ────────────────────────────────────────────────────────────────
     config_res = graphql_query(url, apikey, "query { configuration { plugins } }")
     plugins_cfg = config_res.get("data", {}).get("configuration", {}).get("plugins", {})
     my_cfg = plugins_cfg.get("MRStashSanitize", {})
     strip_unmatched = str(my_cfg.get("strip_unmatched_sigils", "true")).lower() not in ("false", "0", "no", "off")
     print(f"strip_unmatched_sigils={strip_unmatched}", flush=True)
 
+    # ── Tags ──────────────────────────────────────────────────────────────────
     print("Loading all tags…", flush=True)
     tag_lookup = get_all_tags(url, apikey)
     print(f"Loaded {len(tag_lookup)} tags/aliases", flush=True)
 
     _write_status({"status": "running", "message": "Scanning scenes…", "progress": 5})
 
+    # ── Scenes ────────────────────────────────────────────────────────────────
     page = 1
     per_page = 100
     total_count, first_batch = get_scenes_paginated(url, apikey, page, per_page)
@@ -261,6 +357,7 @@ def task_scan(url, apikey):
     print(f"Total scenes: {total_count}, fetched: {len(all_scenes)}", flush=True)
 
     pending = []
+
     for idx, scene in enumerate(all_scenes):
         if idx % 50 == 0:
             pct = 5 + int(idx / max(len(all_scenes), 1) * 90)
@@ -276,18 +373,22 @@ def task_scan(url, apikey):
         if not path:
             continue
 
-        dirname = os.path.dirname(path)
-        basename_orig = os.path.basename(path)
-        stem, ext = os.path.splitext(basename_orig)
+        file_dirname    = os.path.dirname(path)
+        basename_orig   = os.path.basename(path)
+        stem, ext       = os.path.splitext(basename_orig)
 
+        studio          = scene.get("studio")
+        studio_name     = studio["name"] if studio else None
+        studio_folder   = studio_to_folder_name(studio_name) if studio_name else None
+
+        existing_tag_ids = {t["id"] for t in scene.get("tags", [])}
+
+        # ── Token analysis ────────────────────────────────────────────────────
         sigil_tokens, other_tokens = extract_candidate_tokens(stem)
         all_candidates = sigil_tokens + other_tokens
 
-        if not all_candidates:
-            continue
-
-        matched = []
-        unmatched_sigil = []
+        matched          = []
+        unmatched_sigil  = []
 
         for c in sigil_tokens:
             phrase = c["phrase"]
@@ -315,60 +416,89 @@ def task_scan(url, apikey):
         if strip_unmatched:
             tokens_to_strip.extend(unmatched_sigil)
 
-        if not tokens_to_strip and not matched:
-            continue
-
-        new_stem = build_new_filename(stem, tokens_to_strip)
+        new_stem     = build_new_filename(stem, tokens_to_strip) if tokens_to_strip else stem
         new_basename = new_stem + ext
-        new_path = os.path.join(dirname, new_basename)
 
-        existing_tag_ids = {t["id"] for t in scene.get("tags", [])}
-        tags_to_add = [m for m in matched if m["tag_id"] not in existing_tag_ids]
-        tags_already = [m for m in matched if m["tag_id"] in existing_tag_ids]
-        all_tag_ids = list(existing_tag_ids | {m["tag_id"] for m in matched})
+        tags_to_add    = [m for m in matched if m["tag_id"] not in existing_tag_ids]
+        tags_already   = [m for m in matched if m["tag_id"] in existing_tag_ids]
+        all_tag_ids    = list(existing_tag_ids | {m["tag_id"] for m in matched})
 
-        has_tag_changes    = len(tags_to_add) > 0
-        has_file_changes   = new_basename != basename_orig
-        if not has_tag_changes and not has_file_changes:
+        has_token_tag_changes  = len(tags_to_add) > 0
+        has_filename_changes   = new_basename != basename_orig
+
+        # ── Directory classification ──────────────────────────────────────────
+        dir_class = classify_directory(path, studio_folder)
+
+        # ── MissingStudio handling ────────────────────────────────────────────
+        needs_missing_studio_tag = (
+            studio is None
+            and missing_studio_tag_id not in existing_tag_ids
+        )
+        if needs_missing_studio_tag:
+            all_tag_ids = list(set(all_tag_ids) | {missing_studio_tag_id})
+
+        # ── Decide whether this scene needs any action ────────────────────────
+        # A scene enters the pending list if ANY of:
+        #   • filename token changes
+        #   • tag changes (from tokens)
+        #   • directory needs fixing (wrong_studio / self_titled / shallow)
+        #   • MissingStudio tag needs adding
+        needs_dir_fix = dir_class in ("wrong_studio", "self_titled", "shallow")
+        if not has_token_tag_changes and not has_filename_changes \
+                and not needs_dir_fix and not needs_missing_studio_tag:
             continue
 
-        # ── Studio folder ──────────────────────────────────────────────────────
-        studio = scene.get("studio")
-        studio_folder = None
-        if studio and studio.get("name"):
-            studio_folder = studio_to_folder_name(studio["name"])
+        # ── Build pending entry ───────────────────────────────────────────────
+
+        # Compute new_path (may be updated further in apply if user adjusts stem)
+        if has_filename_changes or needs_dir_fix:
+            if studio_folder and dir_class != "ok":
+                grandparent = os.path.dirname(file_dirname)
+                dest_dir    = os.path.join(grandparent, studio_folder)
+            else:
+                dest_dir    = file_dirname
+            new_path = os.path.join(dest_dir, new_stem + ext)
+        else:
+            new_path = path   # no file move needed
 
         pending.append({
-            "scene_id": scene["id"],
-            "scene_title": scene.get("title") or basename_orig,
-            "file_id": file["id"],
-            "original_path": path,
-            "new_path": new_path,
-            "original_stem": stem,
-            "new_stem": new_stem,
-            "matched_tokens": matched,
-            "unmatched_tokens": unmatched_sigil,
-            "stripped_unmatched": strip_unmatched,
-            "tags_to_add": tags_to_add,
+            "scene_id":              scene["id"],
+            "scene_title":           scene.get("title") or basename_orig,
+            "file_id":               file["id"],
+            "original_path":         path,
+            "new_path":              new_path,
+            "original_stem":         stem,
+            "new_stem":              new_stem,
+            "matched_tokens":        matched,
+            "unmatched_tokens":      unmatched_sigil,
+            "stripped_unmatched":    strip_unmatched,
+            "tags_to_add":           tags_to_add,
             "tags_already_on_scene": tags_already,
-            "all_tag_ids": all_tag_ids,
-            "filename_changes": has_file_changes,
-            "studio_name": studio["name"] if studio else None,
-            "studio_folder": studio_folder,
+            "all_tag_ids":           all_tag_ids,
+            "filename_changes":      has_filename_changes,
+            "studio_name":           studio_name,
+            "studio_folder":         studio_folder,
+            # New fields
+            "dir_class":             dir_class,      # "ok"|"wrong_studio"|"self_titled"|"shallow"
+            "needs_dir_fix":         needs_dir_fix,
+            "needs_missing_studio":  needs_missing_studio_tag,
+            "missing_studio_tag_id": missing_studio_tag_id,
         })
 
     report = {
-        "status": "done",
-        "message": f"Found {len(pending)} scenes needing sanitization.",
-        "progress": 100,
+        "status":        "done",
+        "message":       f"Found {len(pending)} scenes needing attention.",
+        "progress":      100,
         "total_scanned": len(all_scenes),
-        "pending": pending,
-        "generated_at": int(time.time()),
+        "pending":       pending,
+        "generated_at":  int(time.time()),
     }
     _write_report(report)
-    _write_status({"status": "done",
-                   "message": f"Scan complete. {len(pending)} scenes found.",
-                   "progress": 100})
+    _write_status({
+        "status":   "done",
+        "message":  f"Scan complete. {len(pending)} scenes found.",
+        "progress": 100,
+    })
     print(f"Scan complete. {len(pending)} scenes to sanitize.", flush=True)
 
 
@@ -376,7 +506,7 @@ def task_scan(url, apikey):
 
 def task_apply(url, apikey, args):
     """
-    Apply a subset of the pending changes. Accepts a JSON list of scene_ids to apply.
+    Apply a subset of the pending changes.
     args["scene_ids"] = comma-separated IDs  OR  "all"
     """
     scene_ids_arg = str(args.get("scene_ids", "all")).strip()
@@ -397,7 +527,7 @@ def task_apply(url, apikey, args):
     if scene_ids_arg == "all":
         to_apply = pending
     else:
-        ids_set = set(scene_ids_arg.split(","))
+        ids_set  = set(scene_ids_arg.split(","))
         to_apply = [p for p in pending if str(p["scene_id"]) in ids_set]
 
     print(f"Applying {len(to_apply)} changes…", flush=True)
@@ -406,36 +536,46 @@ def task_apply(url, apikey, args):
     for item in to_apply:
         sid = item["scene_id"]
         try:
-            # Determine effective new path (studio folder aware)
-            new_path = item["new_path"]
-            studio_folder = item.get("studio_folder")
-            if studio_folder:
-                grandparent = os.path.dirname(os.path.dirname(item["original_path"]))
-                current_parent = os.path.basename(os.path.dirname(item["original_path"]))
-                if current_parent != studio_folder:
-                    new_path = os.path.join(grandparent, studio_folder, os.path.basename(new_path))
+            # ── Determine effective destination path ──────────────────────────
+            orig_path    = item["original_path"]
+            orig_dir     = os.path.dirname(orig_path)
+            ext          = os.path.splitext(os.path.basename(orig_path))[1]
+            effective_stem = item["new_stem"]
 
-            if item.get("filename_changes") and item["original_path"] != new_path:
+            studio_folder = item.get("studio_folder")
+            dir_class     = item.get("dir_class", "ok")
+
+            if studio_folder and dir_class != "ok":
+                grandparent = os.path.dirname(orig_dir)
+                dest_dir    = os.path.join(grandparent, studio_folder)
+            else:
+                dest_dir    = orig_dir
+
+            new_path = os.path.join(dest_dir, effective_stem + ext)
+
+            # ── Move file if path changed ─────────────────────────────────────
+            if orig_path != new_path:
                 ok = move_file(url, apikey, item["file_id"], new_path)
                 if not ok:
                     print(f"  WARNING: moveFiles returned false for scene {sid}", flush=True)
 
+            # ── Update title (strip matched/junk tokens from it) ──────────────
             original_title = item.get("scene_title", "")
-            new_title = original_title
-            all_tokens_to_strip_from_title = list(item.get("matched_tokens", []))
+            new_title      = original_title
+            strip_from_title = list(item.get("matched_tokens", []))
             if item.get("stripped_unmatched"):
-                all_tokens_to_strip_from_title.extend(item.get("unmatched_tokens", []))
-            for tok in all_tokens_to_strip_from_title:
+                strip_from_title.extend(item.get("unmatched_tokens", []))
+            for tok in strip_from_title:
                 new_title = re.sub(re.escape(tok["raw"]), '', new_title, flags=re.IGNORECASE)
             new_title = re.sub(r'\s+', ' ', new_title).strip()
             if not new_title:
-                new_title = item["new_stem"]
+                new_title = effective_stem
 
             all_tag_ids = item.get("all_tag_ids", [])
             update_scene(url, apikey, sid, new_title, all_tag_ids)
 
             done += 1
-            print(f"  ✓ Scene {sid}: {os.path.basename(item['original_path'])} → {os.path.basename(new_path)}", flush=True)
+            print(f"  ✓ Scene {sid}: {os.path.basename(orig_path)} → {os.path.basename(new_path)}", flush=True)
         except Exception as e:
             errors += 1
             print(f"  ✗ Scene {sid}: {e}", flush=True)
@@ -443,8 +583,8 @@ def task_apply(url, apikey, args):
     applied_ids = {item["scene_id"] for item in to_apply}
     report["pending"] = [p for p in pending if p["scene_id"] not in applied_ids]
     report["last_apply"] = {
-        "done": done,
-        "errors": errors,
+        "done":      done,
+        "errors":    errors,
         "timestamp": int(time.time()),
     }
     _write_report(report)
@@ -471,15 +611,15 @@ def main():
         print("ERROR: stdin is empty.", flush=True)
         sys.exit(1)
 
-    input_data = json.loads(raw_stdin)
+    input_data        = json.loads(raw_stdin)
     server_connection = input_data.get("server_connection", {})
-    scheme = server_connection.get("Scheme", "http")
-    port = server_connection.get("Port", 9999)
-    apikey = server_connection.get("ApiKey", "")
+    scheme            = server_connection.get("Scheme", "http")
+    port              = server_connection.get("Port", 9999)
+    apikey            = server_connection.get("ApiKey", "")
 
     if not apikey:
-        cookie_obj = server_connection.get("SessionCookie", {})
-        cookie_name = cookie_obj.get("Name", "session")
+        cookie_obj   = server_connection.get("SessionCookie", {})
+        cookie_name  = cookie_obj.get("Name", "session")
         cookie_value = cookie_obj.get("Value", "")
         if cookie_value:
             global SESSION_COOKIE
@@ -494,7 +634,7 @@ def main():
 
     url = f"{scheme}://localhost:{port}/graphql"
 
-    raw_args = input_data.get("args", {})
+    raw_args  = input_data.get("args", {})
     task_name = raw_args.get("mode", "") if isinstance(raw_args, dict) else ""
     if not task_name:
         task_name = input_data.get("task", {}).get("name", "")
