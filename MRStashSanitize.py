@@ -63,16 +63,17 @@ def ensure_tag_exists(url, apikey, tag_name):
     Returns {"id": ..., "name": ...}.
     """
     res = graphql_query(url, apikey, """
-    query FindTag($name: String!) {
-      allTags { id name }
+    query FindTagsByName($name: String) {
+      findTags(tag_filter: { name: { value: $name, modifier: EQUALS } }) {
+        tags { id name }
+      }
     }
-    """)
-    # allTags is cheaper than a per-name query — filter client-side
-    all_tags = res.get("data", {}).get("allTags", [])
-    for t in all_tags:
-        if t["name"].lower() == tag_name.lower():
-            log.info("Tag '%s' already exists (id=%s)", tag_name, t["id"])
-            return {"id": t["id"], "name": t["name"]}
+    """, {"name": tag_name})
+    tags = res.get("data", {}).get("findTags", {}).get("tags", [])
+    if tags:
+        t = tags[0]
+        log.info("Tag '%s' already exists (id=%s)", tag_name, t["id"])
+        return {"id": t["id"], "name": t["name"]}
 
     log.info("Creating tag '%s'…", tag_name)
     create_res = graphql_query(url, apikey, """
