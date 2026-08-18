@@ -638,22 +638,22 @@
 
     const pending  = (report && report.pending) || [];
 
-    // A scene has real tag changes if it will gain tags from parsed tokens or
-    // needs the MissingStudio tag. "Tags Only" means those tag changes WITHOUT
-    // any filename change — not merely "no filename change".
-    const hasTagChanges = p =>
-      (p.tags_to_add && p.tags_to_add.length > 0) || p.needs_missing_studio;
+    // A scene qualifies for "Tags Only" when it has tags PARSED FROM THE
+    // FILENAME (bracket [TagA, TagB] or sigil _Tag/#Tag) to add, and no
+    // filename change. MissingStudio is deliberately excluded here — it's not a
+    // parsed tag and has its own "No Studio" tab.
+    const hasParsedTags = p => p.tags_to_add && p.tags_to_add.length > 0;
 
     // Compute summary counts for filter tabs
     const filenameCount     = pending.filter(p => p.filename_changes).length;
-    const tagsOnlyCount     = pending.filter(p => !p.filename_changes && hasTagChanges(p)).length;
+    const tagsOnlyCount     = pending.filter(p => !p.filename_changes && hasParsedTags(p)).length;
     const studioCount       = pending.filter(p => p.studio_folder && p.dir_class !== "ok").length;
     const dirIssueCount     = pending.filter(p => p.needs_dir_fix).length;
     const missingStudioCount = pending.filter(p => p.needs_missing_studio).length;
 
     const filtered = pending.filter(p => {
       if (filter === "filename"  && !p.filename_changes)  return false;
-      if (filter === "tagsonly"  && (p.filename_changes || !hasTagChanges(p))) return false;
+      if (filter === "tagsonly"  && (p.filename_changes || !hasParsedTags(p))) return false;
       if (filter === "studio"    && (!p.studio_folder || p.dir_class === "ok")) return false;
       if (filter === "dirissue"  && !p.needs_dir_fix)     return false;
       if (filter === "nostudio"  && !p.needs_missing_studio) return false;
