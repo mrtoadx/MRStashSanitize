@@ -89,7 +89,7 @@ def get_scenes_paginated(url, apikey, page=1, per_page=100):
       findScenes(filter: $filter) {
         count
         scenes {
-          id title
+          id title date
           tags { id name }
           files { id path size }
           studio { id name }
@@ -212,96 +212,204 @@ def classify_directory(path, studio_folder):
         return "ok"   # no studio, not self-titled → nothing we can do without more info
 
 
-# ── Token extraction ───────────────────────────────────────────────────────────
+# ── Tag affix / phrase helpers ─────────────────────────────────────────────────
 
-SIGIL_JOINED_RE = re.compile(
-    r'(?<![A-Za-z0-9])'
-    r'[_#]+'
-    r'([A-Z][a-z]+(?:_[A-Z][a-z]+)+)'
-    r'(?![A-Za-z0-9])'
-)
-SIGIL_WORD_RE = re.compile(
-    r'(?<![A-Za-z0-9])'
-    r'[_#]+'
-    r'([A-Za-z][A-Za-z0-9]*)'
-    r'(?![A-Za-z0-9])'
-)
-SIGIL_NUM_RE = re.compile(r'[_#]+(\d+[A-Za-z]*)(?=[_\s#]|$)')
-SIGIL_CHAIN_RE = re.compile(r'((?:[_#][A-Za-z][A-Za-z0-9]*){2,})')
+def strip_tag_affixes(s):
+    """
+    Remove leading/trailing sigils and separators from a parsed tag string.
+
+    A parsed tag must never carry a leading or trailing underscore, dash, or
+    hash. Interior separators are preserved (they get normalised to spaces by
+    token_to_phrase), only the edges are trimmed.
+    """
+    return re.sub(r'^[_\-#\s]+|[_\-#\s]+$', '', s or '')
 
 
 def token_to_phrase(raw_token):
-    s = re.sub(r'^[_#]+', '', raw_token)
-    if s and s[0].isdigit():
+    """
+    Convert a raw filename token (e.g. '_BigAss', '#Blonde', 'Outdoor_Scene')
+    into a normalised, lower-case tag phrase ('big ass', 'blonde',
+    'outdoor scene'). Leading/trailing sigils are always stripped first, so the
+    resulting phrase never begins or ends with _ - or #.
+    """
+    s = strip_tag_affixes(raw_token)
+    if not s:
+        return ''
+    if s[0].isdigit():
         return s.lower()
-    parts = s.split('_')
+    # Split on separators, then split CamelCase runs within each part.
+    parts = re.split(r'[_\-\s]+', s)
     words = []
     for part in parts:
-        words.extend(re.findall(r'[A-Z]?[a-z]+|[A-Z]+(?=[A-Z]|$)', part) or [part])
+        found = re.findall(r'[A-Z]?[a-z]+|[A-Z]+(?=[A-Z]|$)|\d+', part)
+        words.extend(found or ([part] if part else []))
     return ' '.join(w.lower() for w in words if w)
 
 
-def _split_sigil_chain(chain):
-    return re.findall(r'[_#][A-Za-z][A-Za-z0-9]*', chain)
+# ── Sigil token extraction ─────────────────────────────────────────────────────
+#
+# We only treat *sigil-prefixed* tokens ( _Word / #Word ) as tag candidates.
+# Plain CamelCase words and ordinary underscore-separated title words are NOT
+# harvested as tags — that was the old behaviour that shredded legitimate
+# titles like "Some_Studio_-_A_Long_Title_With_Many_Words".
+
+SIGIL_WORD_RE = re.compile(
+    r'(?<![A-Za-z0-9])'          # not mid-word
+    r'([_#])'                    # a single sigil
+    r'([A-Za-z][A-Za-z0-9]*)'    # the word itself
+    r'(?![A-Za-z0-9])'
+)
 
 
 def extract_candidate_tokens(filename_no_ext):
+    """
+    Extract sigil-prefixed tag candidates ( _Word / #Word ).
+
+    Returns (sigil_tokens, other_tokens). other_tokens is retained for API
+    compatibility but is now always empty — we no longer guess tags from plain
+    CamelCase, which is what produced the over-aggressive stripping.
+    """
     sigil_tokens = []
     other_tokens = []
     seen_raw     = set()
-    seen_phrases = set()
-
-    def _add_sigil(raw):
-        if raw in seen_raw:
-            return
-        seen_raw.add(raw)
-        phrase = token_to_phrase(raw)
-        if phrase:
-            seen_phrases.add(phrase)
-        sigil_tokens.append({"raw": raw, "phrase": phrase})
-
-    for m in SIGIL_CHAIN_RE.finditer(filename_no_ext):
-        for tok in _split_sigil_chain(m.group(1)):
-            _add_sigil(tok)
-
-    for m in SIGIL_JOINED_RE.finditer(filename_no_ext):
-        _add_sigil(m.group(0))
 
     for m in SIGIL_WORD_RE.finditer(filename_no_ext):
-        _add_sigil(m.group(0))
-
-    for m in SIGIL_NUM_RE.finditer(filename_no_ext):
-        _add_sigil(m.group(0))
-
-    for m in re.finditer(r'[A-Z][a-z]+(?:[A-Z][a-z]+)+', filename_no_ext):
-        raw = m.group(0)
-        phrase = ' '.join(re.findall(r'[A-Z][a-z]+', raw)).lower()
-        if phrase and raw not in seen_raw and phrase not in seen_phrases:
-            seen_raw.add(raw)
-            seen_phrases.add(phrase)
-            other_tokens.append({"raw": raw, "phrase": phrase})
-
-    for m in re.finditer(r'(?<![_#])\b([A-Z][a-z]+(?:_[A-Z][a-z]+)+)\b', filename_no_ext):
-        raw = m.group(1)
-        phrase = raw.replace('_', ' ').lower()
-        if phrase and raw not in seen_raw and phrase not in seen_phrases:
-            seen_raw.add(raw)
-            seen_phrases.add(phrase)
-            other_tokens.append({"raw": raw, "phrase": phrase})
+        raw = m.group(0)               # includes the leading sigil, e.g. '_Blonde'
+        if raw in seen_raw:
+            continue
+        seen_raw.add(raw)
+        phrase = token_to_phrase(raw)
+        # Ignore trivial single-character words (e.g. the "_A" in
+        # "..._-_A_Long_Title...") — these are almost always title words, not
+        # tags, and treating them as candidates is what caused over-stripping.
+        if phrase and len(phrase) >= 2:
+            sigil_tokens.append({"raw": raw, "phrase": phrase})
 
     return sigil_tokens, other_tokens
 
 
+# ── Bracketed [TagA, TagB] extraction ──────────────────────────────────────────
+
+BRACKET_GROUP_RE = re.compile(r'\[([^\[\]]*)\]')
+
+
+def extract_bracket_tags(filename_no_ext):
+    """
+    Parse '[TagA, TagB]' style groups out of a filename.
+
+    Returns (tags, cleaned_stem) where:
+      • tags         is a list of {"raw": <original>, "phrase": <normalised>}
+                     with all leading/trailing _ - # stripped from each phrase.
+      • cleaned_stem is the filename with the bracket groups removed.
+
+    Tags inside a group may be separated by comma, semicolon, or pipe.
+    """
+    tags = []
+    seen = set()
+
+    for m in BRACKET_GROUP_RE.finditer(filename_no_ext):
+        inner = m.group(1)
+        for part in re.split(r'[,;|]', inner):
+            phrase = token_to_phrase(part)
+            if phrase and phrase not in seen:
+                seen.add(phrase)
+                tags.append({"raw": strip_tag_affixes(part.strip()), "phrase": phrase})
+
+    cleaned = BRACKET_GROUP_RE.sub(' ', filename_no_ext)
+    return tags, cleaned
+
+
+# ── Special-character sanitisation ─────────────────────────────────────────────
+
+# Characters that are illegal or undesirable in filenames. We keep letters,
+# digits, spaces, and a small set of safe punctuation: - _ ( ) . & ' ,
+_ILLEGAL_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_UNWANTED_CHARS_RE = re.compile(r'[^\w\s\-\(\)\.\&\',]', re.UNICODE)
+
+
+def sanitize_special_chars(name):
+    """
+    Remove characters that are illegal or messy in filenames, then tidy up
+    whitespace and separators. Does not touch the extension (pass a stem).
+    """
+    if not name:
+        return ''
+    s = _ILLEGAL_CHARS_RE.sub(' ', name)
+    s = _UNWANTED_CHARS_RE.sub(' ', s)
+    # collapse repeated separators
+    s = re.sub(r'\s+', ' ', s)
+    s = re.sub(r'_{2,}', '_', s)
+    s = re.sub(r'-{2,}', '-', s)
+    # trim stray separators around spaces (e.g. " - - ")
+    s = re.sub(r'\s*-\s*-\s*', ' - ', s)
+    s = re.sub(r'^[\s_\-]+|[\s_\-]+$', '', s)
+    return s.strip()
+
+
+# ── Metadata-based rename ──────────────────────────────────────────────────────
+
+def year_from_scene(scene):
+    """Return a 4-digit year string from a scene's date, or '' if unavailable."""
+    date = scene.get("date") or ""
+    m = re.match(r'(\d{4})', str(date))
+    return m.group(1) if m else ''
+
+
+def build_metadata_stem(studio_name, title, year):
+    """
+    Build a canonical '<Studio> - <Title> (<Year>)' stem from metadata.
+
+    Any component may be missing:
+      • studio + title + year → "Studio - Title (2023)"
+      • title + year          → "Title (2023)"
+      • studio + title        → "Studio - Title"
+      • title only            → "Title"
+    Special characters are stripped from studio and title. Returns '' if there
+    is no usable title.
+    """
+    title = sanitize_special_chars(title or '')
+    if not title:
+        return ''
+    studio = sanitize_special_chars(studio_name or '')
+
+    if studio:
+        stem = f"{studio} - {title}"
+    else:
+        stem = title
+    if year:
+        stem = f"{stem} ({year})"
+    return sanitize_special_chars(stem)
+
+
+# ── Filename cleanup after token removal ───────────────────────────────────────
+
 def build_new_filename(original_stem, tokens_to_remove):
+    """
+    Remove the given raw tokens from a stem and tidy the result: collapse
+    repeated separators, drop dangling dashes/underscores left where tokens
+    used to be, and strip leading/trailing separators.
+    """
     result = original_stem
     sorted_tokens = sorted(tokens_to_remove, key=lambda t: len(t["raw"]), reverse=True)
     for tok in sorted_tokens:
-        result = result.replace(tok["raw"], '')
+        result = result.replace(tok["raw"], ' ')
 
-    result = re.sub(r'_+', '_', result)
+    # Where a token was removed we left a space, which can strand the
+    # surrounding separators, e.g. "dump_ _1080p" or "Foo _ - _ x264".
+    # Collapse any run of whitespace + _/- + whitespace down to a single space.
+    result = re.sub(r'[ \t]*[_\-][ \t]*(?=[ \t]*[_\-])', ' ', result)  # runs of seps
+    result = re.sub(r'\s+', ' ', result)
+    result = re.sub(r'_{2,}', '_', result)
+    result = re.sub(r'-{2,}', '-', result)
+    # A single separator floating between spaces (or at an edge) is dangling.
+    result = re.sub(r'(?:^|\s)[_\-](?:\s|$)', ' ', result)
+    # A separator with a space on exactly one side is a leftover edge from a
+    # removed token: "dump _1080p" → "dump 1080p", "A_ B" → "A B".
+    result = re.sub(r'\s[_\-]+(?=\w)', ' ', result)
+    result = re.sub(r'(?<=\w)[_\-]+\s', ' ', result)
+    result = re.sub(r'\s+', ' ', result)
     result = re.sub(r'^[_\-\s]+|[_\-\s]+$', '', result)
-    result = re.sub(r'\s+', ' ', result).strip()
-    return result
+    return result.strip()
 
 
 # ── Scan task ─────────────────────────────────────────────────────────────────
@@ -382,12 +490,15 @@ def task_scan(url, apikey):
 
         existing_tag_ids = {t["id"] for t in scene.get("tags", [])}
 
-        # ── Token analysis ────────────────────────────────────────────────────
-        sigil_tokens, other_tokens = extract_candidate_tokens(stem)
-        all_candidates = sigil_tokens + other_tokens
+        # ── Bracket [TagA, TagB] extraction ───────────────────────────────────
+        # These always become tags and are always removed from the filename.
+        bracket_tags, stem_after_brackets = extract_bracket_tags(stem)
 
-        matched          = []
-        unmatched_sigil  = []
+        # ── Sigil token analysis ( _Word / #Word ) ────────────────────────────
+        sigil_tokens, _other = extract_candidate_tokens(stem_after_brackets)
+
+        matched          = []      # sigil tokens that map to an existing tag
+        unmatched_sigil  = []      # sigil tokens with no matching tag
 
         for c in sigil_tokens:
             phrase = c["phrase"]
@@ -401,21 +512,49 @@ def task_scan(url, apikey):
             else:
                 unmatched_sigil.append({"raw": c["raw"], "phrase": phrase})
 
-        for c in other_tokens:
-            phrase = c["phrase"]
+        # Bracket tags: resolve each phrase against existing tags. Unmatched
+        # bracket tags are surfaced as "junk" so the user can promote them into
+        # real tags from the UI (same as unmatched sigils).
+        bracket_matched   = []
+        bracket_unmatched = []
+        for bt in bracket_tags:
+            phrase = bt["phrase"]
             if phrase in tag_lookup:
-                matched.append({
-                    "raw": c["raw"],
+                bracket_matched.append({
+                    "raw": bt["raw"],
                     "phrase": phrase,
                     "tag_id": tag_lookup[phrase]["id"],
                     "tag_name": tag_lookup[phrase]["name"],
                 })
+            else:
+                bracket_unmatched.append({"raw": bt["raw"], "phrase": phrase})
 
+        matched.extend(bracket_matched)
+        unmatched_sigil.extend(bracket_unmatched)
+
+        # ── Filename construction ─────────────────────────────────────────────
+        # Prefer a clean metadata-based name when we have a title. Otherwise,
+        # fall back to token-stripping the original stem.
+        title_meta = scene.get("title")
+        year_meta  = year_from_scene(scene)
+        metadata_stem = build_metadata_stem(studio_name, title_meta, year_meta)
+
+        # Tokens removed from the fallback stem (matched tags + optionally
+        # unmatched sigils). Bracket groups are already gone from
+        # stem_after_brackets.
         tokens_to_strip = list(matched)
         if strip_unmatched:
             tokens_to_strip.extend(unmatched_sigil)
 
-        new_stem     = build_new_filename(stem, tokens_to_strip) if tokens_to_strip else stem
+        if metadata_stem:
+            new_stem      = metadata_stem
+            rename_source = "metadata"
+        else:
+            stripped = build_new_filename(stem_after_brackets, tokens_to_strip) \
+                       if (tokens_to_strip or bracket_tags) else stem_after_brackets
+            new_stem      = sanitize_special_chars(stripped) or stem
+            rename_source = "tokens"
+
         new_basename = new_stem + ext
 
         tags_to_add    = [m for m in matched if m["tag_id"] not in existing_tag_ids]
@@ -477,6 +616,8 @@ def task_scan(url, apikey):
             "filename_changes":      has_filename_changes,
             "studio_name":           studio_name,
             "studio_folder":         studio_folder,
+            "rename_source":         rename_source,  # "metadata" | "tokens"
+            "year":                  year_meta,
             # New fields
             "dir_class":             dir_class,      # "ok"|"wrong_studio"|"self_titled"|"shallow"
             "needs_dir_fix":         needs_dir_fix,
@@ -558,15 +699,24 @@ def task_apply(url, apikey, args):
                 if not ok:
                     print(f"  WARNING: moveFiles returned false for scene {sid}", flush=True)
 
-            # ── Update title (strip matched/junk tokens from it) ──────────────
+            # ── Update title ──────────────────────────────────────────────────
+            # When the rename came from existing metadata, the scene title is
+            # already correct — leave it intact. Only strip tag-tokens out of
+            # the title when we derived the name from the filename tokens.
             original_title = item.get("scene_title", "")
-            new_title      = original_title
-            strip_from_title = list(item.get("matched_tokens", []))
-            if item.get("stripped_unmatched"):
-                strip_from_title.extend(item.get("unmatched_tokens", []))
-            for tok in strip_from_title:
-                new_title = re.sub(re.escape(tok["raw"]), '', new_title, flags=re.IGNORECASE)
-            new_title = re.sub(r'\s+', ' ', new_title).strip()
+            if item.get("rename_source") == "metadata":
+                new_title = original_title
+            else:
+                new_title = original_title
+                strip_from_title = list(item.get("matched_tokens", []))
+                if item.get("stripped_unmatched"):
+                    strip_from_title.extend(item.get("unmatched_tokens", []))
+                # Also strip bracketed [ ... ] groups from the title.
+                new_title = BRACKET_GROUP_RE.sub(' ', new_title)
+                for tok in strip_from_title:
+                    new_title = re.sub(re.escape(tok["raw"]), '', new_title, flags=re.IGNORECASE)
+                new_title = re.sub(r'\s+', ' ', new_title).strip()
+                new_title = strip_tag_affixes(new_title)
             if not new_title:
                 new_title = effective_stem
 

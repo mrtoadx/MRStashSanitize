@@ -638,14 +638,22 @@
 
     const pending  = (report && report.pending) || [];
 
+    // A scene has real tag changes if it will gain tags from parsed tokens or
+    // needs the MissingStudio tag. "Tags Only" means those tag changes WITHOUT
+    // any filename change — not merely "no filename change".
+    const hasTagChanges = p =>
+      (p.tags_to_add && p.tags_to_add.length > 0) || p.needs_missing_studio;
+
     // Compute summary counts for filter tabs
+    const filenameCount     = pending.filter(p => p.filename_changes).length;
+    const tagsOnlyCount     = pending.filter(p => !p.filename_changes && hasTagChanges(p)).length;
     const studioCount       = pending.filter(p => p.studio_folder && p.dir_class !== "ok").length;
     const dirIssueCount     = pending.filter(p => p.needs_dir_fix).length;
     const missingStudioCount = pending.filter(p => p.needs_missing_studio).length;
 
     const filtered = pending.filter(p => {
       if (filter === "filename"  && !p.filename_changes)  return false;
-      if (filter === "tagsonly"  &&  p.filename_changes)  return false;
+      if (filter === "tagsonly"  && (p.filename_changes || !hasTagChanges(p))) return false;
       if (filter === "studio"    && (!p.studio_folder || p.dir_class === "ok")) return false;
       if (filter === "dirissue"  && !p.needs_dir_fix)     return false;
       if (filter === "nostudio"  && !p.needs_missing_studio) return false;
@@ -661,13 +669,14 @@
     // ── Filter tab definitions ────────────────────────────────────────────────
     const filterTabs = [
       { key: "all",       label: "All" },
-      { key: "filename",  label: "Rename" },
-      { key: "tagsonly",  label: "Tags Only" },
+      { key: "filename",  label: `Rename (${filenameCount})` },
+      { key: "tagsonly",  label: `Tags Only (${tagsOnlyCount})` },
       { key: "studio",    label: `Studio Move (${studioCount})` },
       { key: "dirissue",  label: `Dir Issues (${dirIssueCount})` },
       { key: "nostudio",  label: `No Studio (${missingStudioCount})` },
     ].filter(t => {
       // Hide zero-count contextual tabs to keep UI tidy
+      if (t.key === "tagsonly" && tagsOnlyCount === 0)      return false;
       if (t.key === "studio"   && studioCount === 0)        return false;
       if (t.key === "dirissue" && dirIssueCount === 0)      return false;
       if (t.key === "nostudio" && missingStudioCount === 0) return false;
